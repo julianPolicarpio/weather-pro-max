@@ -9,8 +9,8 @@ from highcast.fetchers.kalshi import _lo_hi
 
 KALSHI = "https://api.elections.kalshi.com/trade-api/v2"
 _DATE = re.compile(r"(\d{2}[A-Z]{3}\d{2})")
-_GT = re.compile(r"strictly greater than (-?\d+)")
-_LT = re.compile(r"strictly less than (-?\d+)")
+_GT = re.compile(r"(?:strictly )?(?:greater than|above) (-?\d+)")
+_LT = re.compile(r"(?:strictly )?(?:less than|below) (-?\d+)")
 _BETWEEN = re.compile(r"between (-?\d+)\s*(?:-|–|to|and)\s*(-?\d+)")
 
 

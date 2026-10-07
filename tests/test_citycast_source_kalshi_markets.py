@@ -64,3 +64,13 @@ def test_fetch_series_markets_pages_both_endpoints_live_wins():
 def test_chunks_one_per_series_always_current():
     cs = chunks(object(), {"KXHIGHNY": ("KNYC", "high"), "KXLOWTNYC": ("KNYC", "low")})
     assert sorted(c.key for c in cs) == ["KXHIGHNY", "KXLOWTNYC"] and all(c.current for c in cs)
+
+
+def test_interval_from_live_archive_wordings_without_strictly():
+    """Verified 2026-10-07 on KXHIGHNY's archive: 482 markets (2022-25) say 'is greater than',
+    'is less than' or 'is above' without 'strictly'; their subtitles confirm the bounds."""
+    rule = "... as reported by the National Weather Service's Daily Climate Report, {} then ..."
+    assert interval({"rules_primary": rule.format("is greater than 44°,")}) == (45, None)    # "45° or above"
+    assert interval({"rules_primary": rule.format("is less than 36°,")}) == (None, 35)       # "35.0° or lower"
+    assert interval({"rules_primary": rule.format("is above 97°,")}) == (98, None)           # "98° or higher"
+    assert interval({"rules_primary": rule.format("is greater than 83-NA°,")}) == (84, None)  # "84° or above"
