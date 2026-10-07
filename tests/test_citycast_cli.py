@@ -24,3 +24,37 @@ def test_backfill_exit_1_on_errors(tmp_path, monkeypatch):
 
 def test_unknown_station_rejected(tmp_path):
     assert cli.main(["--db", str(tmp_path / "h.db"), "backfill", "cli", "--station", "KXXX"]) == 2
+
+
+def _spy(monkeypatch):
+    seen = {"workers": [], "since": []}
+
+    def fake_run(conn, chunks, **kw):
+        seen["workers"].append(kw.get("workers", 1))
+        return {"done": 0, "skipped": 0, "rows": 0, "errors": []}
+
+    def fake_candles(paced, conn, now_iso, since=None):
+        seen["since"].append(since)
+        return []
+    monkeypatch.setattr(cli, "run_chunks", fake_run)
+    monkeypatch.setattr(cli.kalshi_candles, "chunks", fake_candles)
+    monkeypatch.setattr(cli.cli_reports, "chunks", lambda *a, **k: [])
+    return seen
+
+
+def test_candles_run_with_two_workers_and_no_since_means_all(tmp_path, monkeypatch):
+    seen = _spy(monkeypatch)
+    assert cli.main(["--db", str(tmp_path / "h.db"), "backfill", "kalshi-candles"]) == 0
+    assert seen["workers"] == [2] and seen["since"] == [None]
+
+
+def test_candles_since_passed_when_given(tmp_path, monkeypatch):
+    seen = _spy(monkeypatch)
+    cli.main(["--db", str(tmp_path / "h.db"), "backfill", "kalshi-candles", "--since", "2026-09-01"])
+    assert seen["since"] == ["2026-09-01"]
+
+
+def test_other_sources_use_one_worker(tmp_path, monkeypatch):
+    seen = _spy(monkeypatch)
+    cli.main(["--db", str(tmp_path / "h.db"), "backfill", "cli"])
+    assert seen["workers"] == [1]

@@ -55,3 +55,22 @@ def test_chunks_only_closed_usable_markets(tmp_path):
         assert [ch.key for ch in cs] == ["OK"] and not cs[0].current
         table, rows = cs[0].run()[0]
         assert table == "kalshi_candles" and len(rows) == 2
+
+
+def test_chunks_since_filters_by_close_time(tmp_path):
+    base = {"series": "KXHIGHLAX", "event_ticker": "E", "station": "KLAX", "metric": "high",
+            "event_date": "2025-01-05", "open_time": "2025-01-04T20:00:00+00:00", "result": "no",
+            "expiration_value": "", "raw": "{}", "lo": 66, "hi": 67}
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        with c:
+            db.upsert(c, "kalshi_markets", [
+                {**base, "ticker": "OLD", "close_time": "2025-01-06T07:59:00+00:00"},
+                {**base, "ticker": "NEW", "close_time": "2026-09-10T07:59:00+00:00"},
+            ])
+
+        class FakePaced:
+            def get_json(self, url, params=None):
+                return {"market_settled_ts": "2026-08-08T00:00:00Z"}
+        now = lambda: "2026-10-07T00:00:00+00:00"  # noqa: E731
+        assert [ch.key for ch in chunks(FakePaced(), c, now, since="2026-09-01")] == ["NEW"]
+        assert [ch.key for ch in chunks(FakePaced(), c, now)] == ["OLD", "NEW"]

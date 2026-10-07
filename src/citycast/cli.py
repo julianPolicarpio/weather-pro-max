@@ -15,7 +15,7 @@ from highcast.timeutil import utcnow_iso
 SOURCES = ("cli", "mos", "obs", "kalshi-markets", "kalshi-candles")
 
 
-def _chunks_for(source, paced, conn, stations, since, today):
+def _chunks_for(source, paced, conn, stations, since, today, candle_since=None):
     if source == "cli":
         return cli_reports.chunks(paced, stations, since, today, utcnow_iso)
     if source == "mos":
@@ -26,7 +26,7 @@ def _chunks_for(source, paced, conn, stations, since, today):
         idx = {s: v for s, v in series_index(stations).items() if v[0] in stations}
         return kalshi_markets.chunks(paced, idx)
     if source == "kalshi-candles":
-        return kalshi_candles.chunks(paced, conn, utcnow_iso)
+        return kalshi_candles.chunks(paced, conn, utcnow_iso, since=candle_since)
     raise ValueError(source)
 
 
@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     b = sub.add_parser("backfill")
     b.add_argument("source", choices=SOURCES + ("all",))
     b.add_argument("--station")
-    b.add_argument("--since", default="2021-01-01")
+    b.add_argument("--since", default=None)
     b.add_argument("--refresh", action="store_true")
     cov = sub.add_parser("coverage")
     cov.add_argument("--json", action="store_true")
@@ -60,12 +60,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "backfill":
             paced = Paced()
             today = date.today()
-            since = date.fromisoformat(args.since)
+            since = date.fromisoformat(args.since or "2021-01-01")
             sources = SOURCES if args.source == "all" else (args.source,)
             total = {"done": 0, "skipped": 0, "rows": 0, "errors": []}
             for source in sources:
-                chunks = _chunks_for(source, paced, conn, stations, since, today)
-                s = run_chunks(conn, chunks, refresh=args.refresh, now_iso=utcnow_iso)
+                chunks = _chunks_for(source, paced, conn, stations, since, today,
+                                     candle_since=args.since)
+                s = run_chunks(conn, chunks, refresh=args.refresh, now_iso=utcnow_iso,
+                               workers=2 if source == "kalshi-candles" else 1)
                 for k in ("done", "skipped", "rows"):
                     total[k] += s[k]
                 total["errors"] += s["errors"]
