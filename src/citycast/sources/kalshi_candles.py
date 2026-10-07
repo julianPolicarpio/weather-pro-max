@@ -53,12 +53,15 @@ def fetch_candles(paced, ticker: str, series: str, open_iso: str | None, close_i
     return {"candlesticks": merged}
 
 
-def chunks(paced, conn, now_iso) -> list[Chunk]:
+def chunks(paced, conn, now_iso, since: str | None = None) -> list[Chunk]:
     now = now_iso()
-    rows = conn.execute(
-        "SELECT ticker, series, open_time, close_time FROM kalshi_markets "
-        "WHERE NOT (lo IS NULL AND hi IS NULL) AND close_time < ? ORDER BY close_time",
-        (now,)).fetchall()
+    sql = ("SELECT ticker, series, open_time, close_time FROM kalshi_markets "
+           "WHERE NOT (lo IS NULL AND hi IS NULL) AND close_time < ?")
+    args: list = [now]
+    if since:
+        sql += " AND close_time >= ?"
+        args.append(since)
+    rows = conn.execute(sql + " ORDER BY close_time", args).fetchall()
     if not rows:
         return []
     cutoff = historical_cutoff(paced)

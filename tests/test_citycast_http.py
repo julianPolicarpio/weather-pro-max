@@ -65,3 +65,36 @@ def test_get_json_parses():
     clk = Clock()
     p, _ = _paced([(200, '{"a": 1}')], clk)
     assert p.get_json(KAL) == {"a": 1}
+
+
+def test_paced_is_thread_safe_and_spaces_fetch_starts():
+    import threading
+    import time as _t
+    lock = threading.Lock()
+    state = {"t": 0.0}
+    starts = []
+
+    def clock():
+        with lock:
+            return state["t"]
+
+    def sleep(s):
+        with lock:
+            state["t"] += s
+        _t.sleep(0.0005)
+
+    def fetch(url, params):
+        starts.append(clock())
+        return 200, "ok"
+    p = Paced(fetch=fetch, sleep=sleep, clock=clock)
+    assert hasattr(p, "_lock")
+
+    def work():
+        for _ in range(10):
+            p.get_text(KAL)
+    ts = [threading.Thread(target=work) for _ in range(2)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    starts.sort()
+    assert len(starts) == 20
+    assert all(b - a >= 0.2 - 1e-9 for a, b in zip(starts, starts[1:]))

@@ -1,6 +1,7 @@
 # src/citycast/http.py
 """Paced, throttle-aware GET for IEM and Kalshi (spec §2.4)."""
 import json
+import threading
 import time
 from urllib.parse import urlparse
 
@@ -38,14 +39,16 @@ class Paced:
         self.host_interval = dict(DEFAULT_INTERVALS if host_interval is None else host_interval)
         self.fetch, self.sleep, self.clock, self.backoffs = fetch, sleep, clock, tuple(backoffs)
         self._last: dict[str, float] = {}
+        self._lock = threading.Lock()
 
     def _wait(self, host: str) -> None:
-        last = self._last.get(host)
-        if last is not None:
-            delay = self.host_interval.get(host, 1.0) - (self.clock() - last)
-            if delay > 0:
-                self.sleep(delay)
-        self._last[host] = self.clock()
+        with self._lock:   # request starts per host stay >= interval apart across threads
+            last = self._last.get(host)
+            if last is not None:
+                delay = self.host_interval.get(host, 1.0) - (self.clock() - last)
+                if delay > 0:
+                    self.sleep(delay)
+            self._last[host] = self.clock()
 
     def get_text(self, url: str, params: dict | None = None) -> str:
         host = urlparse(url).hostname or ""

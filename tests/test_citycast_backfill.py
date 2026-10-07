@@ -64,3 +64,48 @@ def test_write_error_fails_only_that_chunk_and_rolls_back(tmp_path):
                        now_iso=NOW, progress=lambda m: None)
         assert s["done"] == 1 and s["errors"][0]["key"] == "BAD"
         assert [r[0] for r in c.execute("SELECT date FROM cli_daily")] == ["2024-01-04"]
+
+
+def _mk_chunks(n, sleep_s=0.0, bad=()):
+    import time as _t
+
+    def mk(i):
+        def run():
+            _t.sleep(sleep_s)
+            if i in bad:
+                raise RuntimeError("boom")
+            return [("cli_daily", [_row(f"2024-02-{i + 1:02d}", i)])]
+        return Chunk("cli", f"K{i}", False, run)
+    return [mk(i) for i in range(n)]
+
+
+def test_workers_match_sequential_and_upsert_on_main_thread(tmp_path, monkeypatch):
+    import threading
+    main = threading.get_ident()
+    threads = []
+    real = db.upsert
+
+    def spy(conn, table, rows):
+        threads.append(threading.get_ident())
+        return real(conn, table, rows)
+    monkeypatch.setattr(db, "upsert", spy)
+    out = {}
+    for w in (1, 2):
+        with closing(db.connect(tmp_path / f"h{w}.db")) as c:
+            s = run_chunks(c, _mk_chunks(20, 0.05, bad=(3,)), now_iso=NOW, progress=lambda m: None,
+                           workers=w)
+            out[w] = (s, c.execute("SELECT date, high_f FROM cli_daily ORDER BY date").fetchall(),
+                      c.execute("SELECT key FROM backfill_log ORDER BY key").fetchall())
+    assert out[1][0] == out[2][0]
+    assert out[2][0]["done"] == 19 and [e["key"] for e in out[2][0]["errors"]] == ["K3"]
+    assert [tuple(r) for r in out[1][1]] == [tuple(r) for r in out[2][1]]
+    assert [tuple(r) for r in out[1][2]] == [tuple(r) for r in out[2][2]]
+    assert "K3" not in [r[0] for r in out[2][2]]
+    assert set(threads) == {main}
+
+
+def test_workers_skip_logged_chunks(tmp_path):
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        run_chunks(c, _mk_chunks(6), now_iso=NOW, progress=lambda m: None, workers=2)
+        s = run_chunks(c, _mk_chunks(6), now_iso=NOW, progress=lambda m: None, workers=2)
+        assert (s["done"], s["skipped"]) == (0, 6)
