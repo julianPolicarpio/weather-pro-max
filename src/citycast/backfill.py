@@ -26,20 +26,22 @@ def run_chunks(conn, chunks, *, refresh: bool = False, now_iso: Callable[[], str
         if not refresh and not ch.current and is_logged(conn, ch.source, ch.key):
             summary["skipped"] += 1
             continue
+        n = 0
         try:
             results = ch.run()
+            with conn:   # one transaction: a write error rolls back this chunk only
+                for table, rows in results:
+                    n += db.upsert(conn, table, rows)
+                # An empty answer may be a transient outage, so it is not logged as done:
+                # the next run asks again (a truly empty chunk costs one request per run).
+                if not ch.current and n > 0:
+                    conn.execute("INSERT OR REPLACE INTO backfill_log VALUES (?,?,?,?)",
+                                 (ch.source, ch.key, now_iso(), n))
         except Exception as e:  # noqa: BLE001 — one bad chunk must not stop the backfill
             summary["errors"].append({"source": ch.source, "key": ch.key,
                                       "error": f"{type(e).__name__}: {e}"})
             progress(f"ERROR {ch.source} {ch.key}: {type(e).__name__}: {e}")
             continue
-        n = 0
-        with conn:
-            for table, rows in results:
-                n += db.upsert(conn, table, rows)
-            if not ch.current:
-                conn.execute("INSERT OR REPLACE INTO backfill_log VALUES (?,?,?,?)",
-                             (ch.source, ch.key, now_iso(), n))
         summary["done"] += 1
         summary["rows"] += n
         progress(f"{ch.source} {ch.key}: {n} rows")
