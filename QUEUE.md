@@ -1274,6 +1274,29 @@ KMIA high alone is now **12 of 13**.
 
 ---
 
+## 16. 🔨 SANDBOX UI: KALSHI-STYLE PORTFOLIO + WEATHER WATCHLIST — queued 2026-10-07 (Julian)
+
+Make the sandbox dashboard (`src/sandbox/web.py`, `templates/`) work like the Kalshi app,
+so a paper session feels like the real thing. Two screens first:
+
+* **Open positions (portfolio).** One row per held contract, per account: market (city ·
+  high/low · date · bucket), side, contracts, avg cost, live mark (current bid from the latest
+  snapshot), unrealized P&L ($ and %), time to close, and settled history below it with
+  realized P&L. Account switcher (favorite / mos / highcast / manual) and cash at the top.
+* **Watchlist = every weather market we trade.** All 48 temperature series (24 cities ×
+  high/low), grouped by city then date, each ladder showing bucket, yes bid/ask, market
+  probability, size at ask, and change since the previous snapshot. Filter by city / metric /
+  today vs tomorrow; a marker on buckets any account holds; click a bucket → the Bet page
+  pre-filled with that ticker.
+
+Layout and workflow modelled on Kalshi; **no Kalshi logo, name, colors or trade dress**
+(standing sandbox rule: "no Kalshi logos or styling"). Data comes only from the existing
+snapshots/quotes/orders tables: no new feeds, still read-only GETs, still paper only.
+
+**Blocked on:** nothing for the build, but the screens only show live data once
+`sandbox cycle` runs every 15 minutes (launchd cycle job not installed as of 2026-10-07).
+**Before building:** brainstorm → spec → plan, mockup first.
+
 ## Not doing, and why
 
 - **Auto-skip weatherguard** (Prompt 3 part 1). The near-boundary days it would
