@@ -12,6 +12,9 @@ from citycast.sources import cli_reports, kalshi_candles, kalshi_markets, mos, o
 from citycast.stations import load_stations, series_index
 from highcast.timeutil import utcnow_iso
 
+# Kalshi requests stay paced to <= 5/s by Paced's lock; 3 in flight reach that pace
+# (measured ~0.35-0.55 s per request, 1.8 markets/s sequential on 2026-10-07).
+CANDLE_WORKERS = 3
 SOURCES = ("cli", "mos", "obs", "kalshi-markets", "kalshi-candles")
 
 
@@ -67,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
                 chunks = _chunks_for(source, paced, conn, stations, since, today,
                                      candle_since=args.since)
                 s = run_chunks(conn, chunks, refresh=args.refresh, now_iso=utcnow_iso,
-                               workers=2 if source == "kalshi-candles" else 1)
+                               workers=CANDLE_WORKERS if source == "kalshi-candles" else 1)
                 for k in ("done", "skipped", "rows"):
                     total[k] += s[k]
                 total["errors"] += s["errors"]

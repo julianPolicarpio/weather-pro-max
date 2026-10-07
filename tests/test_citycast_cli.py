@@ -42,10 +42,10 @@ def _spy(monkeypatch):
     return seen
 
 
-def test_candles_run_with_two_workers_and_no_since_means_all(tmp_path, monkeypatch):
+def test_candles_run_with_candle_workers_and_no_since_means_all(tmp_path, monkeypatch):
     seen = _spy(monkeypatch)
     assert cli.main(["--db", str(tmp_path / "h.db"), "backfill", "kalshi-candles"]) == 0
-    assert seen["workers"] == [2] and seen["since"] == [None]
+    assert seen["workers"] == [cli.CANDLE_WORKERS] == [3] and seen["since"] == [None]
 
 
 def test_candles_since_passed_when_given(tmp_path, monkeypatch):
