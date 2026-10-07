@@ -1,0 +1,134 @@
+IS THE MODEL CALIBRATED ON OPEN-ENDED BUCKETS? Nothing has ever measured it.
+
+WHY THIS EXISTS, 2026-08-10. The desk refused a KLAX LOW pick of `>=69` at a
+stated 96%, reason: "unmeasured confidence -- sits above the highest band this
+market has been calibrated on". True, but the diagnosis was subtler than it
+looked: `BAND_CALIB`'s highest KLAX-low band tops out at 80% because only 13
+recent records ever exceeded it -- AND, more importantly, the bands are built on
+the MODAL 2F BUCKET. In 1,634 walk-forward records KLAX low's modal 2F bucket
+never once exceeded 90%. Today's live pick was 96%.
+
+The two numbers are different objects. `>=69` aggregates the whole upper tail,
+so it reaches probabilities no single 2F bucket ever does. Extending the 2F band
+table upward would NOT have licensed that 96%, because the table does not
+describe cumulative buckets at all.
+
+Kalshi lists an open-ended bucket at EACH END of every ladder, so this is not an
+edge case -- it is two of the six rungs, every day, on every market, and none of
+it has ever been calibrated.
+
+WHAT IS MEASURED. Walk-forward at each market's commit hour, same harness as
+`scripts/tail_calibration_eval.py` (which measures INDIVIDUAL 2F buckets -- a
+different object, since a cumulative sum's errors can cancel or compound).
+For every test day and both ladder parities:
+
+    P(outcome >= T)  for the ladder's top open bucket
+    P(outcome <= T)  for the bottom one
+
+binned by the model's stated probability, against the realised rate.
+
+THE THRESHOLD MOVES, SO SWEEP IT. Kalshi centres each day's ladder on consensus,
+so the open bucket sits a few rungs from the middle and its position varies. The
+walk-forward has no historical ladders, so instead of inventing one this sweeps
+T across offsets from the model's own median and reports calibration BY STATED
+PROBABILITY -- which is what the desk needs: given p, how often is it right?
+
+PARITY IS AVERAGED, as everywhere else in this project.
+
+⚠️ EXPECTED OUTCOME, stated before running: the tail is probably UNDER-stated.
+`models/intraday.py` records measured under-dispersion (0.10 -> 0.125,
+0.90 -> 0.833), and an under-dispersed model puts too little mass in the tail.
+If so, a cumulative bucket that sums that tail would come back UNDER-confident,
+meaning a 96% is really higher than 96% and the refusal was over-cautious.
+Being wrong about that is the point of running it.
+
+
+
+### KLAX LOW h6   test days=584
+  UPPER open bucket
+    stated band        n   stated  realised      gap   95% CI on realised
+    0.00-0.05       2954    0.010     0.000   +0.010   [0.000,0.001]  <<< MISCALIBRATED (overstates)
+    0.05-0.20         68    0.173     0.176   -0.003   [0.104,0.284]
+    0.20-0.50        482    0.344     0.380   -0.035   [0.337,0.424]
+    0.50-0.80        382    0.674     0.725   -0.051   [0.678,0.767]  <<< MISCALIBRATED (understates)
+    0.80-0.90        267    0.851     0.891   -0.040   [0.848,0.923]
+    0.90-0.97        581    0.944     0.943   +0.001   [0.921,0.959]
+    0.97-1.01       3442    0.995     0.991   +0.004   [0.987,0.994]  <<< MISCALIBRATED (overstates)
+
+  LOWER open bucket
+    stated band        n   stated  realised      gap   95% CI on realised
+    0.00-0.05       2587    0.011     0.017   -0.006   [0.013,0.023]  <<< MISCALIBRATED (understates)
+    0.05-0.20        535    0.112     0.090   +0.023   [0.068,0.117]
+    0.20-0.50        382    0.326     0.275   +0.051   [0.233,0.322]  <<< MISCALIBRATED (overstates)
+    0.50-0.80        482    0.656     0.620   +0.035   [0.576,0.663]
+    0.80-0.90         67    0.825     0.821   +0.004   [0.713,0.894]
+    0.90-0.97        548    0.968     1.000   -0.032   [0.993,1.000]  <<< MISCALIBRATED (understates)
+    0.97-1.01       3575    0.997     1.000   -0.003   [0.999,1.000]  <<< MISCALIBRATED (understates)
+
+
+### KLAX HIGH h13   test days=584
+  UPPER open bucket
+    stated band        n   stated  realised      gap   95% CI on realised
+    0.00-0.05       2480    0.012     0.011   +0.001   [0.007,0.016]
+    0.05-0.20        619    0.108     0.095   +0.013   [0.075,0.121]
+    0.20-0.50        405    0.322     0.326   -0.004   [0.282,0.373]
+    0.50-0.80        343    0.668     0.644   +0.024   [0.592,0.693]
+    0.80-0.90        198    0.849     0.803   +0.046   [0.742,0.852]
+    0.90-0.97        437    0.959     0.979   -0.021   [0.961,0.989]  <<< MISCALIBRATED (understates)
+    0.97-1.01       3694    0.996     0.999   -0.004   [0.998,1.000]  <<< MISCALIBRATED (understates)
+
+  LOWER open bucket
+    stated band        n   stated  realised      gap   95% CI on realised
+    0.00-0.05       2893    0.010     0.001   +0.008   [0.001,0.004]  <<< MISCALIBRATED (overstates)
+    0.05-0.20        268    0.133     0.172   -0.039   [0.131,0.221]
+    0.20-0.50        343    0.332     0.356   -0.024   [0.307,0.408]
+    0.50-0.80        405    0.678     0.674   +0.004   [0.627,0.718]
+    0.80-0.90        291    0.854     0.873   -0.018   [0.830,0.906]
+    0.90-0.97        648    0.942     0.949   -0.007   [0.929,0.964]
+    0.97-1.01       3328    0.994     0.995   -0.000   [0.991,0.997]
+
+
+### KMIA LOW h7   test days=577
+  UPPER open bucket
+    stated band        n   stated  realised      gap   95% CI on realised
+    0.00-0.05       3146    0.009     0.000   +0.009   [-0.000,0.001]  <<< MISCALIBRATED (overstates)
+    0.20-0.50        316    0.343     0.329   +0.014   [0.280,0.383]
+    0.50-0.80        727    0.650     0.649   +0.001   [0.614,0.683]
+    0.80-0.90        520    0.855     0.850   +0.005   [0.817,0.878]
+    0.90-0.97        744    0.941     0.909   +0.033   [0.886,0.927]  <<< MISCALIBRATED (overstates)
+    0.97-1.01       2625    0.993     0.979   +0.014   [0.973,0.984]  <<< MISCALIBRATED (overstates)
+
+  LOWER open bucket
+    stated band        n   stated  realised      gap   95% CI on realised
+    0.00-0.05       1834    0.016     0.032   -0.017   [0.025,0.041]  <<< MISCALIBRATED (understates)
+    0.05-0.20        902    0.116     0.135   -0.019   [0.114,0.159]
+    0.20-0.50        726    0.350     0.350   +0.000   [0.316,0.385]
+    0.50-0.80        320    0.657     0.675   -0.018   [0.622,0.724]
+    0.90-0.97        574    0.967     1.000   -0.033   [0.993,1.000]  <<< MISCALIBRATED (understates)
+    0.97-1.01       3722    0.997     1.000   -0.003   [0.999,1.000]  <<< MISCALIBRATED (understates)
+
+
+### KMIA HIGH h13   test days=580
+  UPPER open bucket
+    stated band        n   stated  realised      gap   95% CI on realised
+    0.00-0.05       2524    0.011     0.013   -0.002   [0.010,0.019]
+    0.05-0.20        496    0.111     0.119   -0.008   [0.093,0.150]
+    0.20-0.50        460    0.335     0.322   +0.013   [0.281,0.366]
+    0.50-0.80        358    0.665     0.701   -0.036   [0.652,0.746]
+    0.80-0.90        209    0.843     0.871   -0.028   [0.819,0.910]
+    0.90-0.97        592    0.953     0.966   -0.013   [0.948,0.978]
+    0.97-1.01       3481    0.996     0.999   -0.003   [0.997,1.000]  <<< MISCALIBRATED (understates)
+
+  LOWER open bucket
+    stated band        n   stated  realised      gap   95% CI on realised
+    0.00-0.05       2756    0.011     0.004   +0.007   [0.002,0.007]  <<< MISCALIBRATED (overstates)
+    0.05-0.20        366    0.124     0.101   +0.023   [0.074,0.136]
+    0.20-0.50        358    0.335     0.299   +0.036   [0.254,0.348]
+    0.50-0.80        460    0.665     0.678   -0.013   [0.634,0.719]
+    0.80-0.90        259    0.856     0.842   +0.015   [0.792,0.881]
+    0.90-0.97        568    0.945     0.940   +0.005   [0.918,0.957]
+    0.97-1.01       3353    0.995     0.995   +0.000   [0.992,0.997]
+
+  gap > 0 = the model OVERSTATES the open bucket (its stated number is
+  too high).  gap < 0 = UNDERSTATES.  A band whose stated probability
+  falls inside the CI on the realised rate is calibrated.

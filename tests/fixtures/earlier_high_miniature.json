@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "runs": [
+    {
+      "run_id": "mini-run",
+      "experiment": "earlier_high_remaining_heat_v1",
+      "spec_version": "phase-0",
+      "started_utc": "2026-08-26T13:00:00+00:00",
+      "mode": "forward_shadow",
+      "code_fingerprint": "mini-code",
+      "config_sha256": "mini-config",
+      "schema_version": 1,
+      "manifest_json": {"fixture": true},
+      "status": "completed"
+    }
+  ],
+  "source_events": [
+    {
+      "source_event_id": "mini-source",
+      "run_id": "mini-run",
+      "station": "KMIA",
+      "source": "metar",
+      "fetched_utc": "2030-01-01T00:00:00+00:00",
+      "valid_utc": "2026-08-26T12:00:00+00:00",
+      "parser_version": "fixture-v1",
+      "raw_body": {"raw": "METAR KMIA 261200Z"},
+      "parsed_input": {"raw": "METAR KMIA 261200Z"}
+    }
+  ],
+  "snapshots": [
+    {
+      "feature_snapshot_id": "mini-snapshot",
+      "run_id": "mini-run",
+      "station": "KMIA",
+      "target_date": "2026-08-26",
+      "checkpoint_hour": 9,
+      "asof_utc": "2026-08-26T13:00:00+00:00",
+      "bundle": "B1",
+      "feature_schema_version": 1,
+      "feature_code_sha256": "mini-feature",
+      "features_json": {"cur_rh_pct": 70.0},
+      "missing_json": {"cur_rh_pct": false},
+      "lineage_json": {"source_event_ids": ["mini-source"]},
+      "visible_floor_f": 85.0,
+      "source_max_known_utc": "2026-08-26T12:00:00+00:00",
+      "created_utc": "2026-08-26T13:00:01+00:00"
+    }
+  ],
+  "predictions": [
+    {
+      "replay_prediction_id": "mini-prediction",
+      "run_id": "mini-run",
+      "feature_snapshot_id": "mini-snapshot",
+      "station": "KMIA",
+      "target_date": "2026-08-26",
+      "checkpoint_hour": 9,
+      "issued_utc": "2026-08-26T13:00:02+00:00",
+      "bundle": "B1",
+      "fold_id": "mini-fold",
+      "model_fingerprint": "mini-model",
+      "train_cutoff_date": "2026-08-25",
+      "train_row_count": 1,
+      "point_f": 87.0,
+      "quantiles_json": {"p50": 87.0},
+      "buckets_json": {"86-87": 0.5},
+      "created_utc": "2026-08-26T13:00:03+00:00"
+    }
+  ],
+  "outcomes": [
+    {
+      "outcome_id": "mini-outcome",
+      "station": "KMIA",
+      "target_date": "2026-08-26",
+      "cli_high_f": 88,
+      "recorded_utc": "2026-08-27T00:00:00+00:00",
+      "raw_sha256": "mini-outcome-raw",
+      "is_final": true
+    }
+  ],
+  "forward_shadow": [
+    {
+      "run_id": "mini-run",
+      "no_trade": true,
+      "final_outcome_id": "mini-outcome"
+    }
+  ]
+}

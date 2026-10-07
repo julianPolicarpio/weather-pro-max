@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.julian.highcast.kmia</string>
+  <key>ProgramArguments</key><array>
+    <string>__PROJECT__/.venv/bin/highcast</string>
+    <string>--config</string>
+    <string>config/kmia.yaml</string>
+    <string>wake</string>
+  </array>
+  <key>WorkingDirectory</key><string>__PROJECT__</string>
+  <!--
+    KLAX's job (com.julian.highcast.plist) fires every 300s via StartInterval,
+    a timer that starts counting from whenever launchd last ran it -- not
+    aligned to the wall clock. Both jobs write to the SAME data/highcast.db
+    (see db.py's comment on PRAGMA busy_timeout=4000), so a StartInterval timer
+    here too could, after enough restarts/sleep-wake cycles, drift into firing
+    in the same few hundred ms as KLAX's and hit "database is locked" -- that
+    already happened once with a single writer's retries.
+
+    This job instead uses StartCalendarInterval pinned to the odd 5-minute
+    marks (:02, :07, :12, ...), offset 2 minutes from KLAX's nominal :00/:05
+    grid. It cannot GUARANTEE zero overlap -- KLAX's own timer floats and can
+    land on :02 by coincidence -- but it removes the systematic collision a
+    matching StartInterval would eventually produce, and pushes the two jobs'
+    typical firing times ~2 minutes apart, comfortably outside the few
+    milliseconds either wake cycle actually holds the write lock. The
+    busy_timeout=4000ms is the backstop for whatever the offset doesn't catch:
+    a wake cycle's writes are a handful of upserts, not a long transaction, so
+    4s is generous headroom even for a genuine coincidence.
+  -->
+  <key>StartCalendarInterval</key><array>
+    <dict><key>Minute</key><integer>2</integer></dict>
+    <dict><key>Minute</key><integer>7</integer></dict>
+    <dict><key>Minute</key><integer>12</integer></dict>
+    <dict><key>Minute</key><integer>17</integer></dict>
+    <dict><key>Minute</key><integer>22</integer></dict>
+    <dict><key>Minute</key><integer>27</integer></dict>
+    <dict><key>Minute</key><integer>32</integer></dict>
+    <dict><key>Minute</key><integer>37</integer></dict>
+    <dict><key>Minute</key><integer>42</integer></dict>
+    <dict><key>Minute</key><integer>47</integer></dict>
+    <dict><key>Minute</key><integer>52</integer></dict>
+    <dict><key>Minute</key><integer>57</integer></dict>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>__PROJECT__/data/launchd-kmia.log</string>
+  <key>StandardErrorPath</key><string>__PROJECT__/data/launchd-kmia.err</string>
+</dict></plist>
