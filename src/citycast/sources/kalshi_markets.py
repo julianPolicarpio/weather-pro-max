@@ -18,19 +18,25 @@ def event_date(event_ticker: str) -> str | None:
     m = _DATE.search(event_ticker or "")
     if not m:
         return None
-    return datetime.strptime(m.group(1), "%y%b%d").date().isoformat()
+    try:
+        return datetime.strptime(m.group(1), "%y%b%d").date().isoformat()
+    except ValueError:   # an impossible date (e.g. 21FEB30) skips this market, not the series
+        return None
 
 
 def interval(m: dict) -> tuple[int | None, int | None] | None:
     if m.get("floor_strike") is not None or m.get("cap_strike") is not None:
         return _lo_hi(m.get("floor_strike"), m.get("cap_strike"))
     rules = m.get("rules_primary") or ""
-    if g := _GT.search(rules):
-        return int(g.group(1)) + 1, None
-    if lt := _LT.search(rules):
-        return None, int(lt.group(1)) - 1
     if b := _BETWEEN.search(rules):
         return int(b.group(1)), int(b.group(2))
+    g, lt = _GT.search(rules), _LT.search(rules)
+    if g and lt:          # two-sided wording ("above X and below Y"): ambiguous, so unusable
+        return None
+    if g:
+        return int(g.group(1)) + 1, None
+    if lt:
+        return None, int(lt.group(1)) - 1
     return None
 
 

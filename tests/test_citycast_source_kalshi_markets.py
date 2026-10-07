@@ -74,3 +74,16 @@ def test_interval_from_live_archive_wordings_without_strictly():
     assert interval({"rules_primary": rule.format("is less than 36°,")}) == (None, 35)       # "35.0° or lower"
     assert interval({"rules_primary": rule.format("is above 97°,")}) == (98, None)           # "98° or higher"
     assert interval({"rules_primary": rule.format("is greater than 83-NA°,")}) == (84, None)  # "84° or above"
+
+
+def test_interval_between_wins_and_two_sided_text_is_ambiguous():
+    assert interval({"rules_primary": "is between 66-67°, then ... (not above 67)"}) == (66, 67)
+    assert interval({"rules_primary": "is above 66 and below 69, then ..."}) is None
+    assert interval({"rules_primary": "is less than 50 or greater than 60, then ..."}) is None
+
+
+def test_impossible_event_date_skips_the_market_not_the_series():
+    assert event_date("HIGHNY-21FEB30") is None
+    ms = [{"ticker": "HIGHNY-21FEB30-T50", "event_ticker": "HIGHNY-21FEB30",
+           "rules_primary": "is greater than 50°", "close_time": "2021-03-01T04:59:00Z"}]
+    assert market_rows(ms, "KXHIGHNY", IDX) == []
