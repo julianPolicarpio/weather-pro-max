@@ -1,0 +1,21 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Live data: SQLite databases (GBs), their backups, launchd logs. Never commit.
+data/
+
+
+.agents/
+
+# OS
+.DS_Store
+
+# Kalshi credentials live in ~/.highcast/ and env vars, never here. Belt and braces:
+*.pem
+*.key
+.env
+.env.*

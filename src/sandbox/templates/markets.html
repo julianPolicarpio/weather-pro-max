@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block body %}
+{% if not snap %}<p>No snapshot yet. Run <code>sandbox cycle</code>.</p>{% else %}
+<p class="muted">Snapshot {{ snap.taken_at | manila }} · {{ events | length }} events</p>
+{% for e in events %}
+<h3>{{ e.series }} · {{ e.station }} · {{ e.date }}</h3>
+<div class="table-scroll" tabindex="0" role="region" aria-label="{{ e.series }} {{ e.date }} buckets">
+<table>
+  <tr><th>Bucket</th><th>Ticker</th><th>Bid</th><th>Ask</th><th>Size at ask</th><th>Market p</th></tr>
+  {% for m, p in e.rows %}
+  <tr><td>{{ m.label }}</td><td class="muted">{{ m.ticker }}</td>
+      <td>{{ "%.2f"|format(m.yes_bid) if m.yes_bid is not none else "—" }}</td>
+      <td>{{ "%.2f"|format(m.yes_ask) if m.yes_ask is not none else "—" }}</td>
+      <td>{{ "%.0f"|format(m.yes_ask_size) if m.yes_ask_size is not none else "—" }}</td>
+      <td>{{ "%.1f%%"|format(p * 100) if p is not none else "—" }}</td></tr>
+  {% endfor %}
+</table>
+</div>
+{% endfor %}
+{% endif %}
+{% endblock %}

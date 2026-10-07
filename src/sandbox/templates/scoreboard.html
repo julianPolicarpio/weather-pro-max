@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block body %}
+<style>
+  .score-table { overflow-x: auto; max-width: 100%; margin-bottom: 20px; }
+  .score-table table { min-width: 640px; margin-bottom: 0; }
+  .score-table:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+  .banner { box-sizing: border-box; max-width: 100%; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+</style>
+{% for card in cards %}
+{% set sc = card.score %}{% set status = card.confirmation %}
+<h3>{{ sc.account }} <span class="muted">· {{ card.label }}</span></h3>
+<p class="banner {{ 'good' if status.state == 'UNLOCKED' else 'bad' if status.state == 'LOCKED' else '' }}">
+  <strong>{{ card.verdict }}</strong>:
+  settled {{ sc.settled_bets }}/{{ n_required }} ·
+  scored {{ sc.brier_n }}/{{ n_required }} ·
+  events {{ sc.n_events }}/{{ n_events_required }} ·
+  scored-events {{ sc.brier_events }}/{{ n_events_required }} ·
+  profit test {{ "✓" if sc.profit_pass else "✗" }} · score test {{ "✓" if sc.score_pass else "✗" }}</p>
+<p class="muted">Informational timing split by city-day; this is not another gate.</p>
+<div class="score-table" tabindex="0" role="region" aria-label="{{ sc.account }} timing evidence">
+<table>
+  <tr><th scope="col">Timing</th><th scope="col">Settled bets</th><th scope="col">Profit after fees</th><th scope="col">Profit CI (per bet)</th><th scope="col">Brier difference</th><th scope="col">Brier CI</th></tr>
+  {% for title, segment in card.segments %}
+  <tr><th scope="row">{{ title }}</th><td>{{ segment.settled_bets }}</td><td>${{ "%.2f"|format(segment.profit) }}</td>
+      <td>{{ "[%.3f, %.3f]"|format(*segment.profit_ci) if segment.profit_ci else "Not available" }}</td>
+      <td>{{ "%+.4f"|format(segment.brier_diff) if segment.brier_diff is not none else ("No settled sample" if segment.settled_bets == 0 else "Not available") }}</td>
+      <td>{{ "[%.4f, %.4f]"|format(*segment.brier_ci) if segment.brier_ci else "Not available" }}</td></tr>
+  {% endfor %}
+</table>
+</div>
+<div class="score-table" tabindex="0" role="region" aria-label="{{ sc.account }} lifetime totals">
+<table>
+  <tr><th scope="col">Cash</th><th scope="col">Profit after fees</th><th scope="col">Profit CI (per bet)</th><th scope="col">Brier vs market</th><th scope="col">Brier CI</th></tr>
+  <tr><td>${{ "%.2f"|format(sc.cash) }}</td><td>${{ "%.2f"|format(sc.profit) }}</td>
+      <td>{{ "[%.3f, %.3f]"|format(*sc.profit_ci) if sc.profit_ci else "Not available" }}</td>
+      <td>{{ "%+.4f"|format(sc.brier_diff) if sc.brier_diff is not none else ("No settled sample" if sc.settled_bets == 0 else "Not available") }}</td>
+      <td>{{ "[%.4f, %.4f]"|format(*sc.brier_ci) if sc.brier_ci else "Not available" }}</td></tr>
+</table>
+</div>
+{% else %}
+<p>No initialized accounts. Initialize the sandbox to begin collecting paper evidence.</p>
+{% endfor %}
+{% endblock %}

@@ -1,0 +1,3978 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>highcast — {{ icao }}</title>
+<meta name="color-scheme" content="light dark">
+<style>
+/* ============================================================
+   TOKENS — "tower board": airfield instrument-panel aesthetic.
+   Day-ahead = amber (approach lights, seen from a distance).
+   Live      = blue  (taxiway edge lights, the close-in read).
+   Both light and dark are first-class; dark is not a dimmed light.
+   ============================================================ */
+:root{
+  color-scheme: light;
+  --bg:            #f7f8f6;
+  --surface:       #ffffff;
+  --surface-2:     #f0f1ee;
+  --ink:           #10141a;
+  --ink-2:         #52565f;
+  --ink-3:         #7a7f88;
+  --border:        rgba(11,11,11,.11);
+  --border-strong: rgba(11,11,11,.20);
+  --dayahead:      #eb6834;
+  --dayahead-wash: rgba(235,104,52,.14);
+  --live:          #2a78d6;
+  --live-wash:     rgba(42,120,214,.13);
+  --good:          #0ca30c;
+  --warning:       #96580a;
+  --warning-wash:  rgba(250,178,25,.20);
+  --danger:        #c62d2d;
+  --danger-wash:   rgba(198,45,45,.13);
+  --shadow:        0 1px 2px rgba(11,11,11,.05), 0 10px 28px -16px rgba(11,11,11,.22);
+  --focus-ring:    #1c5cab;
+  /* The station table's climatology arc (p25-p75). Deliberately NEUTRAL: every
+     other colour here encodes a category (amber day-ahead, blue live, red bad),
+     and the normal range is none of those -- it is the backdrop a reading is
+     judged against, not a judgement. */
+  --band-arc:      rgba(11,11,11,.13);
+
+  --font-ui:   ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    color-scheme: dark;
+    --bg:            #0a0d12;
+    --surface:       #12171f;
+    --surface-2:     #181f29;
+    --ink:           #f5f6f4;
+    --ink-2:         #a7b0bd;
+    --ink-3:         #7b8492;
+    --border:        rgba(255,255,255,.11);
+    --border-strong: rgba(255,255,255,.20);
+    --dayahead:      #e2762f;
+    --dayahead-wash: rgba(226,118,47,.20);
+    --live:          #4c95ea;
+    --live-wash:     rgba(76,149,234,.20);
+    --good:          #2fc22f;
+    --warning:       #fab219;
+    --warning-wash:  rgba(250,178,25,.14);
+    --danger:        #ee9070;
+    --danger-wash:   rgba(238,144,112,.14);
+    --shadow:        0 1px 2px rgba(0,0,0,.5), 0 14px 32px -18px rgba(0,0,0,.65);
+    --focus-ring:    #6fb0ff;
+    --band-arc:      rgba(255,255,255,.16);
+  }
+}
+
+*{ box-sizing:border-box; }
+html{ -webkit-text-size-adjust:100%; }
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:var(--font-ui); line-height:1.45;
+  -webkit-font-smoothing:antialiased;
+}
+.mono{ font-family:var(--font-mono); }
+.visually-hidden{
+  position:absolute; width:1px; height:1px; overflow:hidden;
+  clip:rect(0 0 0 0); white-space:nowrap; border:0; padding:0; margin:-1px;
+}
+.skip-link{
+  position:absolute; left:-9999px; top:0; background:var(--live); color:#fff;
+  padding:.6rem 1rem; z-index:100; border-radius:0 0 6px 0;
+}
+.skip-link:focus{ left:0; }
+a{ color:inherit; }
+:focus-visible{ outline:2px solid var(--focus-ring); outline-offset:2px; border-radius:2px; }
+
+@media (prefers-reduced-motion: reduce){
+  *, *::before, *::after{ animation-duration:.001ms !important; transition-duration:.001ms !important; }
+}
+
+.eyebrow{
+  display:block; font-family:var(--font-mono); font-size:.68rem; font-weight:600;
+  letter-spacing:.09em; text-transform:uppercase; color:var(--ink-3);
+}
+.micro{ font-size:.76rem; }
+.disclaimer{ font-size:.76rem; color:var(--ink-3); margin:.9rem 0 0; }
+
+/* ---------- STATION TABLE ------------------------------------------------
+   Was a flat key/value list where "temp / dewpt" carried the same weight as the
+   number that settles the bet, and where every reading was a bare figure the
+   reader had to supply the physics for. Rebuilt around two ideas:
+
+   1. HIERARCHY. The settlement read is the headline; everything else is
+      evidence for or against it. One large tabular figure, then quiet rows.
+   2. THE GREEN ARC. Each reading sits on a strip showing this station's own
+      p10-p90 for this hour and season, with p25-p75 shaded. Straight out of the
+      instrument-panel language the rest of the dashboard already speaks: a
+      needle inside the arc is nominal, outside it wants attention. It answers
+      "is 5.9F unusual?", which the bare number never could.
+
+   The arc says UNUSUAL, never GOOD or BAD. Which direction favours the bet is
+   not measured, and colouring it by an assumed valence would put invented
+   physics on the dashboard. ---------- */
+.board-market{
+  margin:0 0 1.4rem; padding:0 0 1.1rem;
+  border-bottom:1px solid var(--border);
+}
+.board-market:last-of-type{ margin-bottom:0; padding-bottom:0; border-bottom:0; }
+.board-mkt-head{
+  display:flex; align-items:baseline; justify-content:space-between;
+  gap:.6rem; flex-wrap:wrap; margin:0 0 .7rem;
+}
+.board-mkt-name{
+  font-family:var(--font-mono); font-size:.9rem; font-weight:700;
+  letter-spacing:.05em; color:var(--ink);
+}
+.board-mkt-when{
+  font-family:var(--font-mono); font-size:.72rem; color:var(--ink-3);
+}
+
+/* The daily verdict. Sits above the settlement figure because "is this one
+   worth paying for" comes before "what does it settle to". Three measured
+   states plus two honest non-answers; only AVOID gets a loud colour, since a
+   dashboard that shouts on every panel teaches you to stop reading it. */
+.board-verdict{
+  display:flex; align-items:flex-start; gap:.55rem; margin:0 0 .85rem;
+  padding:.55rem .65rem; border-radius:8px;
+  background:var(--surface-2); border-left:3px solid var(--ink-3);
+}
+.board-verdict-clear{ background:rgba(12,163,12,.10); border-left-color:var(--good); }
+.board-verdict-fair{ border-left-color:var(--ink-2); }
+.board-verdict-avoid{ background:var(--danger-wash); border-left-color:var(--danger); }
+.board-verdict-name{
+  font-family:var(--font-mono); font-size:.72rem; font-weight:700;
+  letter-spacing:.09em; text-transform:uppercase; color:var(--ink);
+  white-space:nowrap;
+}
+.board-verdict-clear .board-verdict-name{ color:var(--good); }
+.board-verdict-avoid .board-verdict-name{ color:var(--danger); }
+.board-verdict-body{ min-width:0; }
+.board-verdict-note{ font-size:.74rem; color:var(--ink-2); line-height:1.4; }
+.board-verdict-gap{
+  font-family:var(--font-mono); font-size:.66rem; color:var(--ink-3);
+  display:block; margin-top:.2rem;
+}
+
+/* The headline: what the day settles to if nothing more moves. */
+.board-settle{ display:flex; align-items:center; gap:.85rem; margin:0 0 .8rem; }
+.board-settle-fig{
+  font-family:var(--font-mono); font-size:2.1rem; font-weight:700;
+  line-height:1; letter-spacing:-.02em; font-variant-numeric:tabular-nums;
+  color:var(--ink);
+}
+.board-settle-meta{ display:flex; flex-direction:column; gap:.12rem; min-width:0; }
+.board-settle-lab{
+  font-family:var(--font-mono); font-size:.64rem; font-weight:600;
+  letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3);
+}
+.board-settle-run{
+  font-family:var(--font-mono); font-size:.76rem; color:var(--ink-2);
+  font-variant-numeric:tabular-nums;
+}
+.board-stalled{ color:var(--warning); font-weight:600; }
+
+/* Can this still move? The single most actionable line on the panel, and it was
+   buried mid-list. A live dot when a group is still to file; grey when the
+   extremum is arithmetically settled and nothing can change it. */
+.board-move{
+  display:flex; align-items:flex-start; gap:.5rem; margin:0 0 .9rem;
+  padding:.5rem .6rem; border-radius:8px; background:var(--surface-2);
+  font-size:.78rem; line-height:1.35;
+}
+.board-move-dot{
+  flex:none; width:.5rem; height:.5rem; border-radius:50%; margin-top:.36rem;
+  background:var(--ink-3);
+}
+.board-move-open .board-move-dot{ background:var(--live); }
+.board-move-open{ background:var(--live-wash); }
+.board-move-lab{
+  font-family:var(--font-mono); font-size:.64rem; font-weight:600;
+  letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3);
+  display:block;
+}
+.board-move-txt{ color:var(--ink); font-family:var(--font-mono); font-size:.76rem; }
+
+/* Evidence rows + the green arc. */
+.board-ev{ display:grid; gap:.4rem; }
+.board-ev-row{
+  display:grid; grid-template-columns:minmax(7.5rem,1.1fr) auto minmax(74px,1fr) auto;
+  align-items:center; gap:.5rem .7rem; font-size:.76rem;
+}
+.board-ev-lab{ color:var(--ink-2); }
+.board-ev-val{
+  font-family:var(--font-mono); color:var(--ink); font-weight:600;
+  font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap;
+}
+.board-strip{ position:relative; height:14px; }
+.board-strip-track{
+  position:absolute; left:0; right:0; top:6px; height:2px;
+  background:var(--border-strong); border-radius:1px;
+}
+.board-strip-arc{
+  position:absolute; top:3px; height:8px; border-radius:2px;
+  background:var(--band-arc);
+}
+.board-strip-tick{
+  position:absolute; top:0; width:2px; height:14px; border-radius:1px;
+  background:var(--ink); transform:translateX(-1px);
+}
+/* Outside p10-p90 the tick is pinned to the end of the track, so it must be
+   visibly different from a reading that genuinely sits at the edge. */
+.board-strip-out .board-strip-tick{ background:var(--warning); width:3px; }
+.board-ev-verdict{
+  font-family:var(--font-mono); font-size:.66rem; letter-spacing:.04em;
+  color:var(--ink-3); text-align:right; white-space:nowrap;
+}
+.board-ev-verdict-unusual{ color:var(--warning); font-weight:600; }
+.board-ev-scale{
+  font-family:var(--font-mono); font-size:.62rem; color:var(--ink-3);
+  margin:.5rem 0 0;
+}
+.board-note{
+  font-family:var(--font-mono); font-size:.7rem; color:var(--ink-3);
+  margin:.7rem 0 0;
+}
+@media (max-width:560px){
+  /* The strip is the first thing to go: below ~120px it cannot place a tick
+     honestly, and a squashed arc reads as precision that is not there. The
+     WORD stays -- "unusual" is the strip's whole message, and dropping both
+     would leave the phone read strictly worse than the text it replaced. */
+  .board-ev-row{ grid-template-columns:1fr auto auto; }
+  .board-strip{ display:none; }
+}
+/* ---------- WHICH MARKET TO TRUST ---------------------------------------
+   Was a 4x5 grid of percentages that the eye had to rank by hand. The job is
+   comparing four markets, so it is now a ranked bar chart -- but the bar is
+   drawn to MEASURED HIT and a tick marks the STATED probability, which makes
+   the overconfidence the literal gap between them. That gap is the money: you
+   pay a price anchored on the tick and settle at the bar. ---------- */
+.board-reliability{ margin-top:1.4rem; padding-top:1rem;
+  border-top:1px solid var(--border); }
+.board-reliability h3{ margin:0 0 .15rem; font-size:.72rem; font-weight:600;
+  color:var(--ink-2); letter-spacing:.06em; text-transform:uppercase;
+  font-family:var(--font-mono); }
+.rel-sub{ margin:0 0 .8rem; font-size:.72rem; color:var(--ink-3); }
+.rel-list{ display:grid; gap:.55rem; }
+.rel-row{
+  display:grid; grid-template-columns:minmax(5.6rem,auto) minmax(90px,1fr) auto;
+  align-items:center; gap:.6rem; font-size:.76rem;
+}
+.rel-name{ font-family:var(--font-mono); color:var(--ink-2); white-space:nowrap; }
+.rel-mine .rel-name{ color:var(--ink); font-weight:700; }
+.rel-mine .rel-name::after{
+  content:" ◂ you"; color:var(--live); font-weight:600; font-size:.68rem;
+}
+.rel-meter{ position:relative; height:16px; }
+.rel-meter-track{
+  position:absolute; left:0; right:0; top:6px; height:4px; border-radius:2px;
+  background:var(--surface-2); border:1px solid var(--border);
+}
+.rel-meter-fill{
+  position:absolute; left:0; top:6px; height:4px; border-radius:2px;
+  background:var(--ink-3);
+}
+.rel-mine .rel-meter-fill{ background:var(--live); }
+/* The stated probability. Amber whenever it sits RIGHT of the measured bar --
+   the model promising more than it delivers is the one failure mode that costs
+   money, so it is the one that gets a colour. */
+.rel-meter-claim{
+  position:absolute; top:1px; width:2px; height:14px; border-radius:1px;
+  background:var(--ink); transform:translateX(-1px);
+}
+.rel-over .rel-meter-claim{ background:var(--warning); }
+.rel-nums{
+  font-family:var(--font-mono); font-size:.72rem; text-align:right;
+  white-space:nowrap; color:var(--ink-2); font-variant-numeric:tabular-nums;
+}
+.rel-nums b{ color:var(--ink); font-weight:700; }
+.rel-over-txt{ color:var(--warning); font-weight:600; }
+.rel-ahead{
+  font-family:var(--font-mono); font-size:.66rem; color:var(--ink-3);
+  grid-column:2 / -1; margin-top:-.3rem;
+}
+@media (max-width:560px){
+  .rel-row{ grid-template-columns:1fr auto; }
+  .rel-meter{ display:none; }
+}
+
+/* ---------- header / tower board ---------- */
+.topbar{
+  background:var(--surface); border-bottom:1px solid var(--border);
+  position:sticky; top:0; z-index:20;
+}
+.topbar-inner{
+  max-width:1180px; margin:0 auto; padding:1rem 1.25rem .85rem;
+  display:flex; align-items:flex-start; justify-content:space-between; gap:1.5rem; flex-wrap:wrap;
+}
+.brand{ display:flex; align-items:center; gap:.65rem; }
+.brand-mark{
+  width:2.1rem; height:2.1rem; border-radius:50%; flex:none;
+  display:flex; align-items:center; justify-content:center;
+  background:conic-gradient(from 220deg, var(--dayahead), var(--live) 55%, var(--dayahead) 100%);
+  color:var(--bg); font-size:1rem; font-weight:700;
+}
+.brand-text{ display:flex; flex-direction:column; line-height:1.2; }
+.brand-name{ font-weight:700; font-size:1.05rem; letter-spacing:-.01em; }
+.brand-station{ color:var(--ink-2); font-size:.82rem; }
+.header-readout{ display:flex; align-items:flex-end; gap:2rem; flex-wrap:wrap; }
+.readout-block{ display:flex; flex-direction:column; gap:.2rem; }
+.value-md{ font-size:1.15rem; font-weight:600; }
+.ratchet{ align-items:flex-end; }
+
+/* the signature element: a split-flap digit readout for the running-max ratchet */
+.flap-row{ display:flex; gap:2px; align-items:baseline; }
+.flap-char{
+  display:inline-flex; align-items:center; justify-content:center;
+  min-width:.66em; padding:.02em .08em;
+  font-family:var(--font-mono); font-variant-numeric:tabular-nums;
+  font-size:1.9rem; font-weight:600; color:var(--ink);
+  background:
+    linear-gradient(var(--surface-2), var(--surface-2) 49%, var(--border-strong) 49%, var(--border-strong) 51%, var(--surface-2) 51%);
+  border:1px solid var(--border); border-radius:4px;
+}
+.flap-char.punct{
+  background:none; border:none; color:var(--ink-3); min-width:auto;
+  font-size:1.5rem; padding:0 .01em;
+}
+#ratchet-range{ color:var(--ink-3); }
+#public-display{
+  display:block; color:var(--warning); cursor:help;
+  border-bottom:1px dotted var(--warning);
+  width:max-content;
+}
+
+.freshness-row{
+  max-width:1180px; margin:0 auto; padding:0 1.25rem .8rem;
+  display:flex; flex-wrap:wrap; gap:.4rem .5rem;
+}
+.miami-freshness{ max-width:none; margin:0 0 .7rem; padding:0; }
+.chip{
+  display:inline-flex; align-items:center; gap:.35rem;
+  font-family:var(--font-mono); font-size:.72rem; padding:.22rem .55rem;
+  border-radius:99px; border:1px solid var(--border); background:var(--surface-2); color:var(--ink-2);
+}
+.chip .dot{ width:6px; height:6px; border-radius:50%; background:var(--good); flex:none; }
+.chip.age-warn .dot{ background:var(--warning); }
+.chip.age-stale .dot{ background:var(--danger); }
+.chip.age-warn{ color:var(--warning); }
+.chip.age-stale{ color:var(--danger); }
+
+/* ---------- day grade ----------
+   INPUT QUALITY, NOT EXPECTED ACCURACY. A grade-A day at 55% is still a coin
+   flip. The disclaimer under the chips is not decoration — every candidate
+   predictive factor was measured and flipped sign between markets
+   (scripts/day_grade_gate.py), so this strip must never read as "will hit". */
+.daygrade-row{
+  max-width:1180px; margin:0 auto; padding:0 1.25rem .8rem;
+  display:flex; flex-wrap:wrap; gap:.4rem .5rem; align-items:center;
+}
+.grade-chip{
+  display:inline-flex; align-items:center; gap:.4rem;
+  font:inherit; appearance:none; -webkit-appearance:none;
+  font-family:var(--font-mono); font-size:.72rem; padding:.22rem .55rem;
+  border-radius:99px; border:1px solid var(--border);
+  background:var(--surface-2); color:var(--ink-2); cursor:help;
+}
+.grade-chip .letter{
+  font-weight:700; font-size:.78rem; line-height:1;
+  min-width:1ch; text-align:center; color:var(--good);
+}
+.grade-chip.g-c{ color:var(--warning); border-color:var(--warning); }
+.grade-chip.g-c .letter{ color:var(--warning); }
+.grade-chip.g-f{ color:var(--danger); border-color:var(--danger); }
+.grade-chip.g-f .letter{ color:var(--danger); }
+.daygrade-note{
+  font-size:.68rem; color:var(--ink-2); opacity:.75; margin-left:.15rem;
+}
+.grade-chip[aria-expanded="true"]{ background:var(--surface); border-color:var(--ink-2); }
+/* ⚠️ NOT a `title` tooltip. Native titles take ~1s to appear, cannot be styled,
+   are suppressed in some setups and do nothing on touch — and the content here
+   runs to 350 characters, which is far past what a tooltip should carry. Julian
+   reported seeing the help cursor and no tooltip at all. Click to expand. */
+.daygrade-detail{
+  max-width:1180px; margin:0 auto; padding:0 1.25rem;
+}
+.daygrade-card{
+  background:var(--surface-2); border:1px solid var(--border);
+  border-radius:var(--radius); padding:.7rem .9rem; margin:0 0 .8rem;
+  font-size:.8rem; color:var(--ink);
+}
+.daygrade-card h4{
+  margin:0 0 .45rem; font-size:.72rem; letter-spacing:.06em;
+  text-transform:uppercase; color:var(--ink-2); font-weight:600;
+}
+.daygrade-card ul{ margin:0; padding:0; list-style:none; }
+.daygrade-card li{
+  display:flex; gap:.5rem; align-items:baseline; padding:.16rem 0;
+  font-family:var(--font-mono); font-size:.74rem;
+}
+.daygrade-card li .lv{ flex:none; width:4.2rem; font-weight:600; }
+.daygrade-card li.l-ok   .lv{ color:var(--good); }
+.daygrade-card li.l-info .lv{ color:var(--ink-2); }
+.daygrade-card li.l-warn .lv{ color:var(--warning); }
+.daygrade-card li.l-fail .lv{ color:var(--danger); }
+.daygrade-card .foot{
+  margin:.55rem 0 0; font-size:.7rem; color:var(--ink-2); opacity:.8;
+}
+
+/* ---------- stale banners ---------- */
+.stale-banners{ max-width:1180px; margin:0 auto; padding:0 1.25rem; }
+.stale-banner{
+  display:flex; gap:.6rem; align-items:flex-start;
+  background:var(--warning-wash); border:1px solid var(--warning); color:var(--ink);
+  border-radius:var(--radius); padding:.65rem .9rem; font-size:.85rem; margin:.9rem 0 0;
+}
+.stale-banner b{ color:var(--warning); }
+.stale-banner .glyph{ flex:none; font-weight:700; color:var(--warning); }
+
+/* ---------- layout / panels ---------- */
+main{ max-width:1180px; margin:0 auto; padding:1.25rem 1.25rem 3rem; display:flex; flex-direction:column; gap:1.25rem; }
+.panel{
+  background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  box-shadow:var(--shadow); padding:1.1rem 1.25rem 1.25rem;
+}
+.panel-head{ display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap; margin-bottom:.75rem; }
+.panel-head h2{ margin:0; font-size:1rem; letter-spacing:-.01em; }
+.grid-2{ display:grid; grid-template-columns:1.15fr 1fr; gap:1.25rem; }
+@media (max-width:820px){ .grid-2{ grid-template-columns:1fr; } }
+
+/* ---------- timing panel ---------- */
+.timing-panel{ position:relative; overflow:hidden; }
+.timing-panel::before{
+  content:""; position:absolute; inset:0 0 auto 0; height:3px;
+  background:linear-gradient(90deg, var(--dayahead), var(--live));
+}
+.timing-phase-tag{
+  font-family:var(--font-mono); font-size:.7rem; font-weight:700; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--ink-3); margin:.35rem 0 .5rem;
+}
+.timing-headline{ font-size:1.55rem; line-height:1.2; margin:0 0 .5rem; letter-spacing:-.015em; }
+.timing-detail{ color:var(--ink-2); margin:0 0 1rem; max-width:62ch; font-size:.95rem; }
+.timing-next{
+  display:flex; flex-wrap:wrap; gap:1.75rem; align-items:flex-end;
+  padding:.85rem 1rem; background:var(--surface-2); border-radius:8px; margin-bottom:.6rem;
+}
+.timing-next .tn-label{ display:block; margin-bottom:.15rem; }
+.timing-next .tn-manila{ font-family:var(--font-mono); font-size:1.4rem; font-weight:600; }
+.timing-next .tn-la{ font-family:var(--font-mono); font-size:.95rem; color:var(--ink-2); }
+.bankroll-control{margin:0 0 .9rem;display:flex;flex-direction:column;gap:.4rem}
+.bankroll-view{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+.bankroll-value{font-size:1.1rem;font-weight:600}
+.bankroll-badge{font-size:.7rem;font-weight:700;letter-spacing:.04em;padding:.1rem .4rem;border-radius:.25rem}
+.bankroll-badge.paper{background:#52565f;color:#fff}
+.bankroll-badge.live{background:#137a3f;color:#fff}
+.bankroll-edit-btn,.bankroll-save,.bankroll-cancel{font:inherit;cursor:pointer;border:1px solid var(--ink-3,#889);background:transparent;color:inherit;border-radius:.25rem;padding:.15rem .5rem}
+.bankroll-edit{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap}
+.bankroll-input{width:8rem;padding:.2rem .4rem}
+.bankroll-status.is-error{color:#c0392b}
+.bankroll-status.is-ok{color:#137a3f}
+/* placement recommendation strip */
+.place-rec{
+  display:flex; gap:.85rem; align-items:flex-start;
+  background:var(--dayahead-wash); border:1px solid var(--dayahead);
+  border-radius:8px; padding:.85rem 1rem .9rem; margin:0 0 1rem;
+}
+.place-tag{
+  font-family:var(--font-mono); font-size:.66rem; font-weight:700; letter-spacing:.1em;
+  color:var(--surface); background:var(--dayahead); padding:.22rem .5rem;
+  border-radius:4px; flex:none; margin-top:.15rem;
+}
+.place-body{ display:flex; flex-direction:column; gap:.15rem; min-width:0; }
+.place-action{ margin:0; font-weight:600; font-size:.95rem; }
+.place-window{
+  font-family:var(--font-mono); font-variant-numeric:tabular-nums;
+  font-size:1.55rem; font-weight:600; line-height:1.25;
+}
+.place-window .pw-tz{ font-size:.8rem; font-weight:600; color:var(--ink-2); margin-left:.35rem; }
+.place-window .pw-la{ font-size:.8rem; font-weight:500; color:var(--ink-3); margin-left:.7rem; }
+.place-target{ margin-top:.1rem; }
+.place-why{ margin:.3rem 0 0; color:var(--ink-2); font-size:.82rem; max-width:62ch; }
+.place-pick{
+  display:flex; align-items:center; gap:.6rem; flex-wrap:wrap;
+  margin:.6rem 0 0; padding:.5rem .75rem; border-radius:8px;
+  background:var(--surface-2); border:1px solid var(--border-strong);
+}
+.place-pick-label{ font-family:var(--font-mono); font-weight:700; font-size:1rem; letter-spacing:-.01em; }
+.place-pick-source{
+  font-family:var(--font-mono); font-size:.62rem; font-weight:700; letter-spacing:.06em;
+  padding:.15rem .5rem; border-radius:5px; border:1px solid var(--border); color:var(--ink-2);
+}
+.place-pick-source.is-live{ color:var(--live); border-color:var(--live); background:var(--live-wash); }
+.place-pick-source.is-dayahead{ color:var(--dayahead); border-color:var(--dayahead); background:var(--dayahead-wash); }
+
+/* ---------- markets by city ---------- */
+.city-row{ display:grid; grid-template-columns:5.2rem 3rem 1fr 3.2rem 3rem;
+  align-items:center; gap:.5rem; padding:.2rem 0; font-size:.82rem; }
+.city-row.is-current{ background:var(--surface-2); border-radius:5px;
+  padding-left:.35rem; padding-right:.35rem; }
+.city-name{ color:var(--ink); font-weight:600; }
+.city-row.is-current .city-name::after{ content:" ◂ you"; color:var(--ink-3);
+  font-weight:400; font-size:.72rem; }
+.city-metric{ font-size:.68rem; letter-spacing:.05em; text-transform:uppercase;
+  color:var(--ink-3); }
+.city-bar{ height:9px; border-radius:0 3px 3px 0; background:currentColor;
+  opacity:.55; min-width:2px; }
+.city-row.is-current .city-bar{ opacity:.95; }
+.city-bartrack{ background:var(--surface-2); border-radius:3px; overflow:hidden; }
+.city-hit{ font-family:var(--font-mono); color:var(--ink); text-align:right; }
+.city-mae{ font-family:var(--font-mono); color:var(--ink-3); text-align:right;
+  font-size:.76rem; }
+.city-note{ font-size:.78rem; color:var(--ink-2); margin:.1rem 0 .5rem; }
+
+/* ---------- best time to place ---------- */
+.besttime{ margin-top:.7rem; border-top:1px solid var(--border); padding-top:.6rem; }
+.besttime-head{ margin-bottom:.35rem; }
+.besttime-hero{ display:flex; align-items:baseline; gap:.9rem; flex-wrap:wrap; }
+.besttime-time{ font-size:1.85rem; font-weight:700; color:var(--ink); letter-spacing:-.01em; }
+.besttime-tz{ font-size:.75rem; color:var(--ink-3); margin-left:.3rem; }
+.besttime-sub{ display:flex; align-items:center; gap:.5rem; font-size:.82rem; color:var(--ink-2); }
+.besttime-state{
+  font-size:.7rem; font-weight:700; letter-spacing:.04em; text-transform:uppercase;
+  padding:.1rem .4rem; border-radius:4px; border:1px solid var(--border-strong);
+}
+.besttime-state.is-open{ color:var(--good); border-color:var(--good); }
+.besttime-state.is-waiting{ color:var(--ink-2); }
+.besttime-state.is-closed{ color:var(--danger); border-color:var(--danger); }
+.besttime-why{ font-size:.8rem; color:var(--ink-2); margin:.4rem 0 .1rem; line-height:1.45; }
+.besttime-chart{ margin:.2rem 0 .1rem; }
+.besttime-chart svg{ display:block; width:100%; height:auto; overflow:visible; }
+
+.sharpness-details{ margin-top:.4rem; }
+.sharpness-details summary{
+  cursor:pointer; font-size:.82rem; color:var(--ink-2); font-weight:600;
+  padding:.15rem 0; list-style:none;
+}
+.sharpness-details summary::-webkit-details-marker{ display:none; }
+.sharpness-details summary::before{ content:"▸ "; color:var(--ink-3); }
+.sharpness-details[open] summary::before{ content:"▾ "; }
+.sharpness-details table{ margin-top:.5rem; }
+
+/* ---------- data tables ---------- */
+.table-scroll{ overflow-x:auto; }
+.data-table{ border-collapse:collapse; width:100%; font-size:.85rem; }
+.data-table th, .data-table td{
+  padding:.4rem .65rem; text-align:left; border-bottom:1px solid var(--border);
+  white-space:nowrap;
+}
+.data-table th{
+  font-family:var(--font-mono); font-size:.68rem; letter-spacing:.06em; text-transform:uppercase;
+  color:var(--ink-3); font-weight:600;
+}
+.data-table td.mono, .data-table td .mono{ font-variant-numeric:tabular-nums; }
+.data-table td.manila{ font-weight:600; }
+.data-table td.la{ color:var(--ink-2); }
+.data-table tr.done{ opacity:.42; }
+.data-table tbody tr:last-child td{ border-bottom:none; }
+
+/* ---------- legend ---------- */
+.legend-inline{ display:flex; gap:1rem; flex-wrap:wrap; }
+.legend-chip{ display:inline-flex; align-items:center; gap:.4rem; font-size:.82rem; color:var(--ink-2); }
+.swatch{ width:11px; height:11px; border-radius:3px; display:inline-block; }
+.swatch-dayahead{ background:var(--dayahead); }
+.swatch-live{ background:var(--live); }
+
+/* ---------- board headers: TODAY (blue/live) vs TOMORROW (orange/day-ahead) --
+   the two boards were getting confused for each other, so the headers get
+   a bold color-coded word plus a matching accent bar, echoing the same
+   live/day-ahead color language used throughout the dashboard. ---------- */
+.board-panel{ position:relative; overflow:hidden; }
+.board-panel::before{ content:""; position:absolute; inset:0 0 auto 0; height:3px; }
+.board-panel-today::before{ background:var(--live); }
+.board-heading{ display:flex; align-items:baseline; gap:.4rem; font-size:1rem; font-weight:800; letter-spacing:.03em; }
+.board-heading-date{ font-weight:600; font-size:.85rem; color:var(--ink-2); letter-spacing:normal; }
+.board-heading-today{ color:var(--live); }
+.board-heading-tomorrow{ color:var(--dayahead); }
+
+/* ---------- bucket board ---------- */
+/* WHERE THE COUNTERPARTY OUTBIDS US MOST.
+   ⚠️ DELIBERATELY NOT COLOUR-CODED BY SIZE. A red banner at some threshold
+   would read as a veto, and this is measured NOT to be one: corr(D, our ask)
+   = -0.798, so a D rule is mostly a cheap-contract rule, and QUEUE item 1 has
+   the cheap bets AHEAD on margin. One neutral style at every magnitude; the
+   number carries the message. See `marketsensor.disagreement`. */
+.ladder-note{
+  font-family:var(--font-mono); font-size:.68rem; color:var(--ink-2);
+  margin:.45rem 0 0; opacity:.85;
+}
+/* ⚠️ NOT an alarm colour. Straddling a boundary is a fact about the ladder, not
+   a reason to skip a bet — measured at Fisher p = 0.44 over 99 day-markets. */
+.ladder-note .ladder-warn{ color:var(--ink); font-weight:600; }
+.disagree-row{
+  max-width:1180px; margin:0 auto .55rem; padding:0 1.25rem;
+  font-family:var(--font-mono); font-size:.72rem; color:var(--ink-2);
+  display:flex; flex-wrap:wrap; gap:.35rem; align-items:baseline;
+}
+.disagree-row .gap{ font-weight:700; color:var(--ink); }
+.disagree-row .who{ opacity:.7; }
+.bucket-board{
+  display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:.6rem;
+}
+.bucket-card{
+  border:1px solid var(--border); border-radius:9px; padding:.65rem .7rem .7rem;
+  background:var(--surface); display:flex; flex-direction:column; gap:.45rem;
+  transition:border-color .15s ease, transform .15s ease;
+}
+.bucket-card.is-modal{
+  border-color:var(--border-strong); box-shadow:0 0 0 2px var(--border-strong) inset;
+  background:var(--surface-2);
+}
+.bucket-card.is-dead{ opacity:.4; }
+.bucket-card.is-dead .bucket-label{ text-decoration:line-through; text-decoration-color:var(--ink-3); }
+.bucket-label-row{ display:flex; align-items:center; justify-content:space-between; gap:.4rem; }
+.bucket-label{ font-family:var(--font-mono); font-weight:700; font-size:.95rem; }
+.bucket-modal-tag{
+  font-family:var(--font-mono); font-size:.6rem; font-weight:700; letter-spacing:.06em;
+  color:var(--ink-2); background:var(--border); padding:.1rem .35rem; border-radius:4px;
+}
+.bucket-dead-tag{
+  font-family:var(--font-mono); font-size:.6rem; font-weight:700; letter-spacing:.06em;
+  color:var(--ink-3);
+}
+.p-row{ display:flex; align-items:center; gap:.4rem; }
+.p-track{ flex:1; height:6px; border-radius:99px; background:var(--surface-2); overflow:hidden; }
+.p-fill{ height:100%; border-radius:99px; }
+.p-fill.dayahead{ background:var(--dayahead); }
+.p-fill.live{ background:var(--live); }
+.p-fill.market{ background:var(--ink-2); }
+.p-value{
+  font-family:var(--font-mono); font-size:.78rem; font-variant-numeric:tabular-nums;
+  min-width:2.9em; text-align:right; color:var(--ink-2);
+}
+.p-value.dayahead{ color:var(--dayahead); }
+.p-value.market{ color:var(--ink-2); }
+.swatch-market{ background:var(--ink-2); }
+.source-badge{
+  font-family:var(--font-mono); font-size:.62rem; font-weight:700; letter-spacing:.06em;
+  color:var(--ink-2); background:var(--surface-2); border:1px solid var(--border);
+  padding:.15rem .5rem; border-radius:5px; white-space:nowrap;
+}
+.source-badge.is-live{
+  color:var(--good); border-color:var(--good); background:rgba(12,163,12,.12);
+}
+.p-value.live{ color:var(--live); }
+.p-empty .p-value{ color:var(--ink-3); }
+
+/* ---------- tomorrow's market card (day-ahead → orange family) ---------- */
+.tomorrow-card{ position:relative; overflow:hidden; }
+.tomorrow-card::before{
+  content:""; position:absolute; inset:0 0 auto 0; height:3px; background:var(--dayahead);
+}
+.tomorrow-stats{ display:flex; flex-wrap:wrap; gap:1.75rem; align-items:flex-end; margin-bottom:.9rem; }
+.tomorrow-stats .ts-value{
+  font-family:var(--font-mono); font-variant-numeric:tabular-nums;
+  font-size:1.5rem; font-weight:600; color:var(--dayahead);
+}
+.tomorrow-stats .ts-sub{ font-family:var(--font-mono); font-size:.95rem; color:var(--ink-2); }
+.stale-badge{
+  font-family:var(--font-mono); font-size:.62rem; font-weight:700; letter-spacing:.06em;
+  color:var(--danger); background:var(--danger-wash); border:1px solid var(--danger);
+  padding:.12rem .4rem; border-radius:4px; margin-left:.4rem; vertical-align:middle;
+}
+
+/* ---------- distribution chart ---------- */
+.dist-chart-wrap{ display:flex; flex-direction:column; gap:.6rem; }
+.dist-scroll{ overflow-x:auto; }
+.dist-svg-shell{ position:relative; }
+.dist-tooltip{
+  position:absolute; pointer-events:none; z-index:5;
+  background:var(--ink); color:var(--bg); font-size:.76rem; border-radius:6px;
+  padding:.4rem .55rem; box-shadow:var(--shadow); white-space:nowrap; opacity:0;
+  transition:opacity .1s ease; transform:translate(-50%,-100%);
+}
+.dist-tooltip.show{ opacity:1; }
+.dist-tooltip .dt-deg{ font-family:var(--font-mono); font-weight:700; margin-bottom:.15rem; }
+.dist-tooltip .dt-row{ display:flex; gap:.4rem; align-items:center; }
+.dist-tooltip .dt-key{ width:8px; height:8px; border-radius:2px; display:inline-block; }
+.bar-rect{ cursor:pointer; }
+.bar-rect:hover, .bar-rect:focus-visible{ filter:brightness(1.12); }
+.dist-empty{ color:var(--ink-3); font-size:.88rem; padding:1rem 0; }
+
+/* ---------- history strip ---------- */
+.history-strip{ display:flex; flex-direction:column; gap:.6rem; }
+.history-stat{ display:flex; align-items:baseline; gap:.5rem; }
+.history-stat .hv{ font-size:1.5rem; font-weight:600; font-family:var(--font-mono); font-variant-numeric:tabular-nums; }
+.history-stat .hl{ color:var(--ink-2); font-size:.82rem; }
+.history-svg-shell{ position:relative; }
+
+/* ---------- track record ---------- */
+.track-summary{ display:flex; flex-wrap:wrap; gap:1.4rem; margin-bottom:.85rem; }
+.track-stat{ display:flex; flex-direction:column; gap:.15rem; }
+.track-stat .ts-kind{
+  font-family:var(--font-mono); font-size:.68rem; font-weight:700; letter-spacing:.08em;
+  text-transform:uppercase;
+}
+.track-stat.is-intraday .ts-kind{ color:var(--live); }
+.track-stat.is-dayahead .ts-kind{ color:var(--dayahead); }
+.track-stat.is-overall .ts-kind{ color:var(--ink-3); }
+.track-stat .ts-vals{ font-family:var(--font-mono); font-size:1.15rem; font-weight:600; font-variant-numeric:tabular-nums; }
+.track-stat .ts-sub{ color:var(--ink-2); font-size:.72rem; }
+.track-hit{ font-weight:700; }
+.track-hit.is-good{ color:var(--good); }
+.track-hit.is-danger{ color:var(--danger); }
+
+/* ---------- field notes ---------- */
+.notes-helper{ color:var(--ink-2); font-size:.85rem; margin:0 0 1rem; max-width:62ch; }
+.note-form{ display:flex; flex-direction:column; gap:.6rem; margin-bottom:1.2rem; }
+.note-form-row{ display:flex; gap:.6rem; flex-wrap:wrap; align-items:center; }
+.note-form-actions{ justify-content:space-between; }
+.note-date{
+  font-family:var(--font-mono); font-size:.85rem; padding:.4rem .55rem;
+  border:1px solid var(--border-strong); border-radius:7px;
+  background:var(--surface-2); color:var(--ink);
+}
+.note-textarea{
+  width:100%; resize:vertical; min-height:3.4rem; padding:.65rem .8rem;
+  font-family:var(--font-ui); font-size:.92rem; color:var(--ink); line-height:1.4;
+  border:1px solid var(--border-strong); border-radius:8px; background:var(--surface-2);
+}
+.note-textarea::placeholder{ color:var(--ink-3); }
+.note-submit{
+  font-family:var(--font-ui); font-weight:600; font-size:.85rem; padding:.5rem 1.1rem;
+  border-radius:7px; border:1px solid var(--live); background:var(--live); color:#fff;
+  cursor:pointer; transition:opacity .15s ease;
+}
+.note-submit:disabled{ opacity:.38; cursor:not-allowed; }
+.note-submit:not(:disabled):hover{ opacity:.88; }
+.note-status{ margin:0; min-height:1.1em; font-size:.78rem; color:var(--ink-2); }
+.note-status.is-error{ color:var(--danger); }
+.note-status.is-ok{ color:var(--good); }
+.notes-list{ display:flex; flex-direction:column; gap:.55rem; }
+.note-entry{
+  border:1px solid var(--border); border-radius:9px; padding:.6rem .8rem;
+  background:var(--surface); display:flex; flex-direction:column; gap:.3rem;
+}
+.note-entry-head{ display:flex; justify-content:space-between; gap:.6rem .9rem; flex-wrap:wrap; align-items:baseline; }
+.note-entry-date{ font-weight:700; font-size:.85rem; }
+.note-entry-summary{ font-family:var(--font-mono); font-size:.75rem; color:var(--ink-2); }
+.note-entry-age{ font-family:var(--font-mono); font-size:.72rem; color:var(--ink-3); margin-left:auto; }
+.note-entry-sky{ margin:0; font-size:.9rem; color:var(--ink); }
+
+/* ---------- footer ---------- */
+.page-footer{ max-width:1180px; margin:0 auto; padding:0 1.25rem 2rem; color:var(--ink-3); font-size:.78rem; }
+
+/* ---------- THE CALL — tier 1 -------------------------------------------
+   The page has one job: answer "what do I do right now?". That answer used to
+   require reading four panels (timing -> best time -> decision desk -> bucket
+   board) AND flipping a HIGH/LOW toggle. Both markets are shown at once here so
+   there is no hidden mode, and everything else on the page is demoted to
+   evidence or record. */
+.call{ margin:0 0 1.1rem; }
+.call-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:.85rem; }
+.call-card{
+  border:1px solid var(--border-strong); border-radius:12px;
+  background:var(--surface); padding:1rem 1.1rem 1.05rem; position:relative;
+  display:flex; flex-direction:column; gap:.55rem;
+}
+.call-card.is-open{ border-color:var(--good); }
+/* The two cards ARE the metric selector — the old HIGH/LOW toggle was a hidden
+   mode, and burying it in a collapsed panel made that worse. Picking a card
+   switches the board and ratchet below to that market. */
+.call-card{ cursor:pointer; }
+.call-card:focus-visible{ outline:2px solid var(--ink-2); outline-offset:2px; }
+.call-card.is-selected{ box-shadow:inset 3px 0 0 var(--ink); }
+/* Miami's cards are informational only -- see callCard(..., selectable=false)
+   -- clicking one does nothing, so the pointer cursor that invites a click on
+   the KLAX cards above would be a lie here. */
+.miami-call .call-card{ cursor:default; }
+/* A blocked pick must NOT be headlined like an answer. The HIGH once showed a
+   confident "≤78" while the ratchet already read 80.2F — a number the board was
+   simultaneously marking OUT. */
+.call-bucket.is-void{ color:var(--ink-3); text-decoration:line-through;
+                      text-decoration-thickness:2px; }
+.call-metric{
+  font-size:.7rem; font-weight:700; letter-spacing:.11em; text-transform:uppercase;
+  color:var(--ink-3);
+}
+.call-bucket{
+  font-family:var(--font-mono); font-size:2.5rem; font-weight:700;
+  line-height:1; letter-spacing:-.02em; color:var(--ink);
+}
+.call-bucket .unit{ font-size:1rem; color:var(--ink-3); margin-left:.25rem; }
+.call-when{ display:flex; align-items:baseline; gap:.45rem; flex-wrap:wrap; }
+.call-when-time{ font-family:var(--font-mono); font-size:1.15rem; font-weight:700; color:var(--ink); }
+.call-when-tz{ font-size:.75rem; color:var(--ink-3); }
+.call-status{
+  font-size:.68rem; font-weight:700; letter-spacing:.05em; text-transform:uppercase;
+  padding:.12rem .45rem; border-radius:4px; border:1px solid var(--border-strong);
+  color:var(--ink-2); white-space:nowrap;
+}
+.call-status.is-open{ color:var(--good); border-color:var(--good); }
+.call-status.is-blocked{ color:var(--danger); border-color:var(--danger); }
+/* Two numbers, always together. Accuracy alone flatters the page — it climbs all
+   day purely because the answer stops being unknown. */
+.call-conf{ display:flex; gap:1.4rem; padding-top:.15rem; }
+.call-conf div{ display:flex; flex-direction:column; gap:.1rem; }
+.call-conf .n{ font-family:var(--font-mono); font-size:1.05rem; font-weight:700; color:var(--ink); }
+.call-conf .k{ font-size:.66rem; letter-spacing:.05em; text-transform:uppercase; color:var(--ink-3); }
+.call-why{ font-size:.79rem; line-height:1.45; color:var(--ink-2); margin:0; }
+.call-why.is-blocked{ color:var(--danger); }
+
+/* ---------- tier 3: the record, collapsed by default ---------------------- */
+.more{ margin-top:1.4rem; border-top:1px solid var(--border); padding-top:.5rem; }
+.more > summary{
+  cursor:pointer; list-style:none; padding:.4rem 0;
+  font-size:.75rem; font-weight:700; letter-spacing:.09em; text-transform:uppercase;
+  color:var(--ink-3);
+}
+.more > summary::-webkit-details-marker{ display:none; }
+.more > summary::before{ content:"▸ "; }
+.more[open] > summary::before{ content:"▾ "; }
+.more > summary:hover{ color:var(--ink-2); }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">◎</span>
+      <div class="brand-text">
+        <span class="brand-name">highcast</span>
+        <span class="brand-station">{{ station }} · <span class="mono">{{ icao }}</span></span>
+      </div>
+    </div>
+    <div class="header-readout">
+      <div class="readout-block">
+        <span class="eyebrow">Target date · LA</span>
+        <span id="target-date" class="mono value-md">—</span>
+      </div>
+      <div class="readout-block ratchet">
+        <span class="eyebrow" id="ratchet-label">Running max · ratchet</span>
+        <div id="ratchet-flap" class="flap-row" aria-live="polite"><span class="flap-char punct">—</span></div>
+        <span id="ratchet-range" class="micro mono">confirmed range —</span>
+        <span id="public-display" class="micro mono" hidden></span>
+      </div>
+    </div>
+  </div>
+  <div id="freshness-row" class="freshness-row" aria-live="polite"></div>
+  <div id="daygrade-row" class="daygrade-row" aria-live="polite"></div>
+  <div id="daygrade-detail" class="daygrade-detail"></div>
+</header>
+
+<div id="stale-banners" class="stale-banners" aria-live="polite"></div>
+
+<main id="main">
+
+  <!-- TIER 1. Both markets, no toggle: a hidden mode is one more thing to hold
+       in your head at 2am. Each card pairs the bucket with WHEN to place it and
+       the two numbers that qualify it — how often the model's bucket is right at
+       that hour, and how much of the answer is still genuinely unknown. -->
+  <section class="call" aria-labelledby="call-heading">
+    <h2 id="call-heading" class="visually-hidden">Today&rsquo;s call</h2>
+    <div id="call-grid" class="call-grid">
+      <p class="dist-empty">Reading the climate day…</p>
+    </div>
+  </section>
+
+  <!-- MIAMI. A second, smaller instance of the SAME tier-1 language above --
+       fed by the same /api/bet and /api/timing endpoints via ?station=KMIA, so
+       it reuses callCard() verbatim rather than a parallel render path that
+       could drift out of sync. Its own section (not merged into the KLAX grid
+       above) so the primary surface above is untouched by this existing:
+       a visible eyebrow label is what tells the two grids apart, since a
+       locked pick reads e.g. "LOW · Tue 29 Jul" in both. -->
+  <section class="call miami-call" aria-labelledby="miami-call-heading">
+    <h2 id="miami-call-heading" class="eyebrow" style="margin:0 0 .5rem;">Miami &middot; KMIA</h2>
+    <div id="miami-freshness-row" class="freshness-row miami-freshness" aria-live="polite"></div>
+    <div id="miami-disagree-row" class="disagree-row" aria-live="polite" hidden></div>
+    <div id="miami-call-grid" class="call-grid">
+      <p class="dist-empty">Reading the climate day…</p>
+    </div>
+  </section>
+
+
+  <style>
+    .decision-grid { display:grid; grid-template-columns:minmax(0,.85fr) minmax(0,1fr); gap:1.4rem; align-items:start; }
+    @media (max-width:640px){ .decision-grid{ grid-template-columns:1fr; } }
+    .decision-stamp { display:inline-block; font-family:var(--font-mono); font-weight:700; font-size:1.5rem; letter-spacing:.05em; padding:.35rem .8rem; border-radius:var(--radius); }
+    .decision-stamp.place { color:var(--good); background:rgba(47,194,47,.13); border:1px solid var(--good); }
+    .decision-stamp.hold { color:var(--warning); background:var(--warning-wash); border:1px solid var(--warning); }
+    .decision-stamp.wait { color:var(--ink-3); background:var(--surface-2); border:1px solid var(--border-strong); }
+    .decision-reason { margin:.65rem 0 0; color:var(--ink-2); font-size:.92rem; line-height:1.45; }
+    .decision-size { margin-top:1rem; display:flex; flex-direction:column; gap:.1rem; }
+    .decision-stake { font-family:var(--font-mono); font-size:1.9rem; font-weight:700; color:var(--ink); line-height:1.05; }
+    .decision-gates { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:.4rem; }
+    .gate-row { display:flex; align-items:center; gap:.6rem; font-size:.86rem; padding:.45rem .6rem; border:1px solid var(--border); border-radius:8px; background:var(--surface-2); }
+    .gate-mark { font-family:var(--font-mono); font-weight:700; width:1.1rem; text-align:center; flex:none; }
+    .gate-row.pass .gate-mark { color:var(--good); } .gate-row.fail .gate-mark { color:var(--danger); }
+    .gate-row.na .gate-mark, .gate-row.info .gate-mark { color:var(--ink-3); }
+    .gate-label { color:var(--ink-2); } .gate-val { margin-left:auto; font-family:var(--font-mono); color:var(--ink); }
+    .pnl-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(116px,1fr)); gap:.7rem; }
+    .pnl-stat { border:1px solid var(--border); border-radius:8px; padding:.55rem .7rem; background:var(--surface-2); }
+    .pnl-stat .eyebrow { display:block; margin-bottom:.25rem; }
+    .pnl-num { font-family:var(--font-mono); font-size:1.35rem; font-weight:700; color:var(--ink); }
+    .pnl-num.pos { color:var(--good); } .pnl-num.neg { color:var(--danger); }
+    .metric-toggle { display:inline-flex; border:1px solid var(--border-strong); border-radius:8px; overflow:hidden; }
+    .mt-btn { font-family:var(--font-mono); font-size:.72rem; letter-spacing:.08em; padding:.32rem .75rem; background:transparent; color:var(--ink-3); border:0; cursor:pointer; }
+    .mt-btn.is-on { background:var(--dayahead-wash); color:var(--dayahead); font-weight:700; }
+    .mt-btn:focus-visible { outline:2px solid var(--focus-ring); outline-offset:-2px; }
+
+    /* ---------- DEMO ACCOUNT -------------------------------------------
+       Dense (8-32px scale), because this panel is a ledger, not a landing
+       page. Money is the ONLY thing allowed to use --good/--danger here:
+       the rest is neutral ink, so a red figure always means "lost money"
+       and never "styled emphasis". Both colour schemes are first-class,
+       same as every other panel -- the tower-board tokens do the work, so
+       nothing below hardcodes a hex. */
+    .demo-lens { display:inline-flex; border:1px solid var(--border-strong); border-radius:8px; overflow:hidden; margin:.2rem 0 .5rem; }
+    .demo-lens-btn { font-family:var(--font-mono); font-size:.72rem; letter-spacing:.08em; padding:.34rem .8rem; background:transparent; color:var(--ink-3); border:0; cursor:pointer; transition:background .18s ease, color .18s ease; min-height:34px; }
+    .demo-lens-btn:hover { color:var(--ink-2); background:var(--surface-2); }
+    .demo-lens-btn[aria-selected="true"] { background:var(--live-wash); color:var(--live); font-weight:700; }
+    .demo-lens-btn:focus-visible { outline:2px solid var(--focus-ring); outline-offset:-2px; }
+    .demo-lens-note { margin:0 0 .9rem; font-size:.8rem; color:var(--ink-3); line-height:1.45; max-width:62ch; }
+
+    .demo-hero { display:flex; flex-wrap:wrap; align-items:flex-end; gap:1rem 1.5rem; margin-bottom:.9rem; }
+    .demo-hero-main { display:flex; flex-direction:column; gap:.1rem; }
+    .demo-balance { font-size:2.4rem; font-weight:700; line-height:1.02; color:var(--ink); font-variant-numeric:tabular-nums; }
+    .demo-delta { font-size:.82rem; color:var(--ink-3); font-variant-numeric:tabular-nums; }
+    .demo-delta.pos { color:var(--good); } .demo-delta.neg { color:var(--danger); }
+    .demo-curve { flex:1 1 220px; min-width:180px; max-width:420px; }
+    .demo-curve svg { display:block; width:100%; height:64px; overflow:visible; }
+
+    .demo-stage { border:1px solid var(--border); border-radius:8px; background:var(--surface-2); padding:.6rem .75rem; margin-bottom:.9rem; }
+    .demo-stage-top { display:flex; align-items:baseline; gap:.5rem; flex-wrap:wrap; }
+    .demo-stage-name { font-family:var(--font-mono); font-size:.8rem; font-weight:700; color:var(--ink); }
+    .demo-stage-range { font-family:var(--font-mono); font-size:.72rem; color:var(--ink-3); }
+    .demo-stage-bar { position:relative; height:6px; border-radius:3px; background:var(--border); margin:.5rem 0 .35rem; overflow:hidden; }
+    .demo-stage-fill { position:absolute; inset:0 auto 0 0; background:var(--live); border-radius:3px; transition:width .3s cubic-bezier(.16,1,.3,1); }
+    .demo-stage-note { font-size:.76rem; color:var(--ink-2); line-height:1.4; margin:0; }
+
+    .demo-scroll { overflow-x:auto; -webkit-overflow-scrolling:touch; margin-top:.9rem; }
+    .demo-ledger table { border-collapse:collapse; width:100%; min-width:560px; font-size:.8rem; }
+    .demo-ledger th, .demo-ledger td { padding:.34rem .5rem; text-align:left; border-bottom:1px solid var(--border); white-space:nowrap; }
+    .demo-ledger th { font-family:var(--font-mono); font-size:.64rem; letter-spacing:.07em; text-transform:uppercase; color:var(--ink-3); font-weight:600; }
+    .demo-ledger td.num { font-family:var(--font-mono); font-variant-numeric:tabular-nums; text-align:right; }
+    .demo-ledger td.why { white-space:normal; color:var(--ink-3); font-size:.74rem; min-width:14rem; }
+    .demo-ledger tbody tr:last-child td { border-bottom:none; }
+    .demo-ledger tr.is-notrade td { color:var(--ink-3); }
+    .demo-ledger .cash.pos { color:var(--good); } .demo-ledger .cash.neg { color:var(--danger); }
+    .demo-chip { font-family:var(--font-mono); font-size:.6rem; font-weight:700; letter-spacing:.05em; padding:.1rem .4rem; border-radius:4px; border:1px solid var(--border-strong); color:var(--ink-2); }
+    .demo-chip.open { border-color:var(--live); color:var(--live); }
+    .demo-chip.win { border-color:var(--good); color:var(--good); }
+    .demo-chip.loss { border-color:var(--danger); color:var(--danger); }
+    .demo-chip.cap { border-color:var(--warning); color:var(--warning); }
+
+    .demo-variants { margin-top:1rem; border-top:1px solid var(--border); padding-top:.7rem; }
+    .demo-variants summary { cursor:pointer; font-family:var(--font-mono); font-size:.7rem; letter-spacing:.07em; text-transform:uppercase; color:var(--ink-3); }
+    .demo-variants summary:focus-visible { outline:2px solid var(--focus-ring); outline-offset:2px; }
+    .demo-count { font-size:.74rem; color:var(--ink-3); margin:.45rem 0 0; }
+
+    /* ---------- STATION TABLE additions ---------------------------------
+       The table now carries every station, so a station rule separates the
+       runs. The chips hold two things that were already collected every wake
+       and displayed nowhere: ensemble spread and 6-hour coverage. Amber means
+       "read this before betting", never "error". */
+    .board-station-rule {
+      margin:1.1rem 0 .5rem; font-family:var(--font-mono); font-size:.7rem;
+      letter-spacing:.12em; color:var(--ink-3); font-weight:700;
+      border-top:1px solid var(--border); padding-top:.6rem;
+    }
+    .board-station-rule:first-child { margin-top:0; border-top:0; padding-top:0; }
+    .board-extra { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:.5rem; margin:.55rem 0 .2rem; }
+    .board-chip {
+      display:flex; flex-direction:column; gap:.15rem; padding:.5rem .6rem;
+      border:1px solid var(--border); border-radius:8px; background:var(--surface-2);
+    }
+    .board-chip .mono { font-family:var(--font-mono); font-size:.8rem; color:var(--ink); font-variant-numeric:tabular-nums; }
+    .board-chip-note { font-size:.7rem; color:var(--ink-3); line-height:1.35; }
+    .board-chip.warn { border-color:var(--warning); background:var(--warning-wash); }
+    .board-chip.warn .mono { color:var(--warning); font-weight:700; }
+
+    /* ---------- TEST BENCH ---------------------------------------------
+       Reads as an instrument panel, not a settings page: the controls are
+       deliberately plain and the SIM ONLY chip rides in the summary, so a
+       collapsed bench still announces that nothing here is live. */
+    .bench-form { margin:.6rem 0 0; }
+    .bench-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:.7rem; }
+    .bench-field { display:flex; flex-direction:column; gap:.2rem; }
+    .bench-input {
+      font-family:var(--font-mono); font-size:.86rem; padding:.4rem .5rem;
+      min-height:38px; border:1px solid var(--border-strong); border-radius:7px;
+      background:var(--surface); color:var(--ink); width:100%;
+      transition:border-color .18s ease;
+    }
+    .bench-input:hover { border-color:var(--live); }
+    .bench-input:focus-visible { outline:2px solid var(--focus-ring); outline-offset:1px; }
+    .bench-hint { font-size:.68rem; color:var(--ink-3); line-height:1.3; }
+    .bench-actions { display:flex; flex-wrap:wrap; align-items:center; gap:.6rem; margin-top:.8rem; }
+    .bench-btn {
+      font-family:var(--font-mono); font-size:.74rem; letter-spacing:.05em;
+      padding:.45rem .9rem; min-height:38px; cursor:pointer; border-radius:7px;
+      border:1px solid var(--live); background:var(--live-wash); color:var(--live);
+      font-weight:700; transition:background .18s ease, color .18s ease;
+    }
+    .bench-btn:hover { background:var(--live); color:var(--surface); }
+    .bench-btn-quiet { border-color:var(--border-strong); background:transparent; color:var(--ink-3); font-weight:600; }
+    .bench-btn-quiet:hover { background:var(--surface-2); color:var(--ink-2); }
+    .bench-btn:focus-visible { outline:2px solid var(--focus-ring); outline-offset:2px; }
+    .bench-status { font-size:.76rem; color:var(--ink-3); }
+    .bench-status.is-on { color:var(--warning); font-weight:600; }
+    .demo-panel.is-bench { border-color:var(--warning); }
+    .demo-panel.is-bench .board-heading::after {
+      content:" · SIMULATED"; color:var(--warning); font-size:.7rem; letter-spacing:.06em;
+    }
+    @media (max-width:520px){ .demo-balance { font-size:1.9rem; } }
+  </style>
+
+
+  <section class="panel board-panel board-panel-today" aria-labelledby="bucket-heading">
+    <div class="panel-head">
+      <h2 id="bucket-heading" class="board-heading board-heading-today">TODAY <span id="bucket-heading-date" class="board-heading-date mono">· —</span></h2>
+      <div class="legend-inline">
+        <span id="bucket-source-badge" class="source-badge">SYNTHETIC RANGES</span>
+        <span class="legend-chip"><i class="swatch swatch-market" aria-hidden="true"></i>Market</span>
+        <span class="legend-chip"><i class="swatch swatch-dayahead" aria-hidden="true"></i>Day-ahead</span>
+        <span class="legend-chip"><i class="swatch swatch-live" aria-hidden="true"></i>Live</span>
+      </div>
+    </div>
+    <div id="disagree-row" class="disagree-row" aria-live="polite" hidden></div>
+    <div id="bucket-board" class="bucket-board" aria-live="polite">
+      <p class="dist-empty">Loading buckets…</p>
+    </div>
+  </section>
+
+
+
+
+  <!-- TIER 3. Record and reference. Collapsed because none of it is needed
+       to answer "what do I do right now" — it is checked occasionally, not
+       twice a day, and at equal visual weight it was drowning the answer. -->
+
+  <details class="more">
+    <summary>Why that time (accuracy by hour)</summary>
+  <section id="timing-panel" class="panel timing-panel" aria-labelledby="timing-heading">
+    <h2 id="timing-heading" class="visually-hidden">When to act</h2>
+    <p id="timing-phase" class="timing-phase-tag">Loading…</p>
+    <h3 id="timing-headline" class="timing-headline">Reading the climate day…</h3>
+    <p id="timing-detail" class="timing-detail"></p>
+    <div id="place-rec" class="place-rec" aria-live="polite">
+      <span class="place-tag" aria-hidden="true">PLACE</span>
+      <div class="place-body">
+        <p id="place-action" class="place-action">Loading recommendation…</p>
+        <span id="place-window" class="place-window mono">—</span>
+        <span id="place-target" class="eyebrow place-target">Target · —</span>
+        <p id="place-why" class="place-why"></p>
+        <p id="model-pick" class="place-pick" hidden>
+          <span class="eyebrow">Model pick</span>
+          <span id="model-pick-label" class="place-pick-label">—</span>
+          <span id="model-pick-source" class="place-pick-source">—</span>
+        </p>
+      </div>
+    </div>
+    <div id="timing-next" class="timing-next"></div>
+
+    <!-- BEST TIME TO PLACE. Replaces a hardcoded HIGH-only CRPS table that was
+         stale within days and empty for the LOW. The hero answers "when", and the
+         curve below shows the trade-off it resolves: accuracy climbs all day, but
+         only because the extremum stops being unknown. Both axes of that are
+         needed to pick an hour, so both are shown. -->
+    <div id="besttime" class="besttime">
+      <div class="besttime-head">
+        <span class="eyebrow">Accuracy by hour · why that time</span>
+      </div>
+      <div id="besttime-chart" class="besttime-chart"></div>
+      <details class="sharpness-details">
+        <summary>Accuracy by hour (table)</summary>
+        <table id="besttime-table" class="data-table micro">
+          <thead><tr>
+            <th>Local</th><th>Manila</th><th>Bucket hit</th><th>MAE</th>
+            <th>Still ahead</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </details>
+    </div>
+    <p id="timing-disclaimer" class="disclaimer"></p>
+  </section>
+  </details>
+
+  <details class="more">
+    <summary>Decision detail (gates & sizing)</summary>
+  <section id="decision-desk" class="panel" aria-labelledby="decision-heading">
+    <div class="panel-head">
+      <h2 id="decision-heading" class="board-heading">DECISION DESK <span id="decision-metric" class="board-heading-date mono">· HIGH</span></h2>
+      <div class="metric-toggle" role="group" aria-label="Choose market">
+        <button type="button" class="mt-btn is-on" data-metric="high">HIGH</button>
+        <button type="button" class="mt-btn" data-metric="low">LOW</button>
+      </div>
+    </div>
+    <p id="decision-target" class="eyebrow" style="margin:.15rem 0 .9rem">—</p>
+    <div id="bankroll-control" class="bankroll-control">
+      <div class="bankroll-view">
+        <span class="eyebrow">Bankroll</span>
+        <span id="bankroll-value" class="bankroll-value mono">—</span>
+        <span id="bankroll-badge" class="bankroll-badge">—</span>
+        <button type="button" id="bankroll-edit-btn" class="bankroll-edit-btn">Edit</button>
+      </div>
+      <form id="bankroll-edit" class="bankroll-edit" hidden>
+        <label class="eyebrow" for="bankroll-input">New bankroll</label>
+        <input id="bankroll-input" class="bankroll-input mono" type="number"
+               min="0" step="1" inputmode="decimal" />
+        <button type="submit" id="bankroll-save" class="bankroll-save">Save</button>
+        <button type="button" id="bankroll-cancel" class="bankroll-cancel">Cancel</button>
+      </form>
+      <span id="bankroll-status" class="bankroll-status" aria-live="polite"></span>
+    </div>
+    <div class="decision-grid">
+      <div class="decision-verdict">
+        <span id="decision-stamp" class="decision-stamp wait">…</span>
+        <p id="decision-reason" class="decision-reason">Loading decision…</p>
+        <div id="decision-size" class="decision-size" hidden>
+          <span class="eyebrow">Suggested stake</span>
+          <span id="decision-stake" class="decision-stake mono">—</span>
+          <span id="decision-stake-sub" class="micro" style="color:var(--ink-3)"></span>
+        </div>
+      </div>
+      <ol id="decision-gates" class="decision-gates" aria-label="Betting gates (all must pass to place)"></ol>
+    </div>
+    <p class="disclaimer">Decision support only — not financial advice, not a profit promise. You place the trade; the rule + amount are yours to accept or ignore.</p>
+  </section>
+  </details>
+
+  <!-- ── DEMO ACCOUNT ────────────────────────────────────────────────────
+       Deliberately NOT inside a <details>: this is the account being run,
+       not an appendix. It is also NOT the "PAPER LEDGER" panel further
+       down -- that one reports the rule's edge from `signals`; this one
+       replays `app_bets` as a single balance. See highcast/paper_account.py
+       for why the two lenses below must never be added together. -->
+  <section id="demo-account" class="panel demo-panel" aria-labelledby="demo-heading">
+    <div class="panel-head">
+      <h2 id="demo-heading" class="board-heading">DEMO ACCOUNT
+        <span id="demo-market" class="board-heading-date mono">· —</span></h2>
+      <span id="demo-seed-badge" class="source-badge">SEEDING…</span>
+    </div>
+
+    <div class="demo-lens" role="tablist" aria-label="Which account lens">
+      <button type="button" id="demo-lens-daily" class="demo-lens-btn" role="tab"
+              aria-selected="true" aria-controls="demo-body" data-lens="daily_plan">DAILY PLAN</button>
+      <button type="button" id="demo-lens-unit" class="demo-lens-btn" role="tab"
+              aria-selected="false" aria-controls="demo-body" tabindex="-1"
+              data-lens="unit_replay">UNIT REPLAY</button>
+    </div>
+    <p id="demo-lens-note" class="demo-lens-note"></p>
+
+    <div id="demo-body">
+      <div class="demo-hero">
+        <div class="demo-hero-main">
+          <span class="eyebrow">Balance</span>
+          <span id="demo-balance" class="demo-balance mono" aria-live="polite">—</span>
+          <span id="demo-delta" class="demo-delta">—</span>
+        </div>
+        <div id="demo-curve" class="demo-curve"></div>
+      </div>
+      <div id="demo-stage" class="demo-stage" hidden></div>
+      <div id="demo-stats" class="pnl-stats"></div>
+      <div id="demo-ledger" class="demo-ledger"></div>
+      <p id="demo-count" class="demo-count"></p>
+    </div>
+
+    <!-- ── TEST BENCH ──────────────────────────────────────────────────
+         Every control here is an ARGUMENT TO THE SIMULATION. None of them
+         writes config or changes what the desk or the order bot will do on
+         the next wake — the endpoint is GET-only and stateless on purpose,
+         so a tab left on an experimental setting cannot become the shipped
+         behaviour. See /api/demo-account's docstring. -->
+    <details id="bench" class="demo-variants">
+      <summary>Test bench · what-if knobs <span class="demo-chip cap">SIM ONLY</span></summary>
+      <form id="bench-form" class="bench-form">
+        <div class="bench-grid">
+          <label class="bench-field">
+            <span class="eyebrow">Commit hour</span>
+            <input id="bench-commit-hour" class="bench-input mono" type="number"
+                   min="0" max="23.5" step="0.5" inputmode="decimal">
+            <span class="bench-hint">station-local · .5 = half past</span>
+          </label>
+          <label class="bench-field">
+            <span class="eyebrow">Opening balance</span>
+            <input id="bench-balance" class="bench-input mono" type="number"
+                   min="0" max="100000" step="1" inputmode="decimal">
+            <span class="bench-hint">$ — blank uses the live Kalshi seed</span>
+          </label>
+          <label class="bench-field">
+            <span class="eyebrow">Confidence gate</span>
+            <input id="bench-confidence" class="bench-input mono" type="number"
+                   min="0.01" max="1" step="0.01" inputmode="decimal">
+            <span class="bench-hint">arms A &amp; B · &quot;super confident&quot;</span>
+          </label>
+          <label class="bench-field">
+            <span class="eyebrow">Aggressive frac</span>
+            <input id="bench-aggressive" class="bench-input mono" type="number"
+                   min="0.01" max="1" step="0.05" inputmode="decimal">
+            <span class="bench-hint">arm A · share of balance staked</span>
+          </label>
+          <label class="bench-field">
+            <span class="eyebrow">Min payoff</span>
+            <input id="bench-min-payoff" class="bench-input mono" type="number"
+                   min="0" max="10" step="0.05" inputmode="decimal">
+            <span class="bench-hint">arm B · (1−price)/price floor</span>
+          </label>
+          <label class="bench-field">
+            <span class="eyebrow">Min edge</span>
+            <input id="bench-min-edge" class="bench-input mono" type="number"
+                   min="0" max="1" step="0.01" inputmode="decimal">
+            <span class="bench-hint">staking gate · shipped 0.03</span>
+          </label>
+          <label class="bench-field">
+            <span class="eyebrow">Max stake frac</span>
+            <input id="bench-max-stake" class="bench-input mono" type="number"
+                   min="0.01" max="1" step="0.01" inputmode="decimal">
+            <span class="bench-hint">the cap · shipped 0.05</span>
+          </label>
+        </div>
+        <div class="bench-actions">
+          <button type="submit" id="bench-apply" class="bench-btn">Run simulation</button>
+          <button type="button" id="bench-reset" class="bench-btn bench-btn-quiet">Back to shipped</button>
+          <span id="bench-status" class="bench-status" aria-live="polite"></span>
+        </div>
+      </form>
+      <p class="disclaimer">Simulation only. These knobs never touch
+        <code>gating.MIN_DECISION_HOUR</code>, the config files, or the order
+        bot — they re-run the replay over the days already recorded. The commit
+        hour re-reads the price and probability the desk actually saw at that
+        hour from <code>signals</code>; it does not re-run the model, so it
+        cannot tell you what a model trained at that hour would have said.</p>
+    </details>
+
+    <details id="demo-arms" class="demo-variants">
+      <summary>Sizing experiment · three arms, same days</summary>
+      <div id="demo-arms-body"></div>
+    </details>
+
+    <details id="demo-variants" class="demo-variants">
+      <summary>Commit-hour comparison · measurement only</summary>
+      <div id="demo-variants-body"></div>
+    </details>
+
+    <p class="disclaimer">Paper only — no order was ever placed. The balance is seeded from the real Kalshi balance and then replayed forward over the app&rsquo;s own committed bets.</p>
+  </section>
+
+  <details class="more">
+    <summary>Per-degree distribution</summary>
+  <section class="panel" aria-labelledby="dist-heading">
+    <div class="panel-head">
+      <h2 id="dist-heading">Per-degree distribution</h2>
+      <div class="legend-inline">
+        <span class="legend-chip"><i class="swatch swatch-dayahead" aria-hidden="true"></i>Day-ahead</span>
+        <span class="legend-chip"><i class="swatch swatch-live" aria-hidden="true"></i>Live</span>
+      </div>
+    </div>
+    <div id="dist-chart" class="dist-chart-wrap">
+      <p class="dist-empty">Loading distribution…</p>
+    </div>
+  </section>
+  </details>
+
+  <details class="more">
+    <summary>Tomorrow</summary>
+  <section id="tomorrow-card" class="panel tomorrow-card" aria-labelledby="tomorrow-heading">
+    <div class="panel-head">
+      <h2 id="tomorrow-heading" class="board-heading board-heading-tomorrow">TOMORROW <span id="tomorrow-heading-date" class="board-heading-date mono">· —</span></h2>
+      <span id="tomorrow-source-badge" class="source-badge">SYNTHETIC RANGES</span>
+      <span id="tomorrow-date" class="eyebrow">Target · —</span>
+    </div>
+    <div id="tomorrow-body" aria-live="polite">
+      <p class="dist-empty">Loading tomorrow's forecast…</p>
+    </div>
+  </section>
+  </details>
+  <details class="more">
+    <summary>App's bets</summary>
+  <section id="app-bets" class="panel" aria-labelledby="app-bets-heading">
+    <div class="panel-head">
+      <h2 id="app-bets-heading" class="board-heading">APP&rsquo;S BETS
+        <span class="board-heading-date mono">&middot; committed, locked</span></h2>
+      <span class="eyebrow">what the app itself decided to place</span>
+    </div>
+    <div id="app-bets-body" aria-live="polite">
+      <p class="dist-empty">No bets committed yet.</p>
+    </div>
+    <p class="disclaimer">One bet per market per day, written once at the decision
+      hour and never rewritten. Only placed while this laptop is awake — a day
+      with no row is a day it was closed, never a bet placed after the fact.</p>
+  </section>
+  </details>
+  <details class="more">
+    <summary>Track record</summary>
+  <section class="panel" aria-labelledby="track-record-heading">
+    <h2 id="track-record-heading" style="margin:0 0 .75rem;font-size:1rem;">Track record <span class="micro" style="color:var(--ink-3);font-weight:400">· forecast accuracy</span></h2>
+    <div id="track-record" aria-live="polite">
+      <p class="dist-empty">Loading track record…</p>
+    </div>
+  </section>
+  </details>
+  <!-- PAPER LEDGER removed 2026-08-05. It asked "does the rule actually have
+       edge?" and the answer is now measured: on 28 settled app_bets the edge
+       signal correlates -0.506 with winning while the market price correlates
+       +0.596. The panel reported an average edge as though a bigger number
+       were better. DEMO ACCOUNT above replaces it with a balance.
+       To restore: git history, or `signals.paper_report` via /api/pnl, which
+       is still served. -->
+  <details class="more">
+    <summary>Station table — the physics behind the number</summary>
+  <section class="panel" aria-labelledby="board-heading">
+    <div class="panel-head">
+      <h2 id="board-heading" class="board-heading">STATION TABLE
+        <span class="board-heading-date mono">· raw state</span></h2>
+      <span class="eyebrow">what the probability is made of</span>
+    </div>
+    <div id="board-body" aria-live="polite">
+      <p class="dist-empty">Loading station table…</p>
+    </div>
+    <p class="disclaimer">Decoded from the stored METAR, source kept. Wind bearing
+      is shown in degrees because a threshold hides a borderline; the onshore
+      projection appears only for KLAX, whose 250° sea-breeze bearing it was
+      measured on. Display only — nothing here votes on a bet.</p>
+  </section>
+  </details>
+
+  <!-- MARKETS BY CITY — REMOVED 2026-08-05, RESTORED 2026-08-28 (QUEUE 7).
+       The removal reasoning was "nothing on the desk reads it and no bet was
+       ever sized from it", which is true and is NOT the point. This is a
+       PLANNING input, not a desk input: QUEUE 7 (breadth) is the only item that
+       attacks sample size directly, every other item is gated on it, and
+       choosing which city to add next is exactly what this ranking is for.
+       Its own caveat stays loud, because it is the thing that makes the panel
+       safe: PREDICTABLE IS NOT PROFITABLE. -->
+  <details class="more">
+    <summary>Markets by city — planning only</summary>
+    <section class="panel" aria-labelledby="cities-heading">
+      <h2 id="cities-heading" style="margin:0 0 .5rem;font-size:1rem;">
+        Candidate markets, ranked by predictability</h2>
+      <p class="micro" style="color:var(--ink-2);margin:0 0 .6rem;">
+        ⚠️ <strong>Predictable is not profitable.</strong> A city the model fits
+        well is also one the market prices well — this ranks how forecastable a
+        station is, <em>not</em> where an edge exists. It informs QUEUE 7 (which
+        city to add next) and nothing else; no bet is sized from it.
+        A new city needs its own <code>HOUR_ACCURACY</code>,
+        <code>MIN_DECISION_HOUR</code>, <code>HOUR_CALIB</code>,
+        <code>BAND_CALIB</code> and <code>CONFIDENCE_FLOOR</code> — all five are
+        per-market and all fail closed.</p>
+      <div id="cities-body"><p class="dist-empty">Loading…</p></div>
+    </section>
+  </details>
+
+  <details class="more">
+    <summary>Clock &amp; 60-day history</summary>
+  <div class="grid-2">
+    <section class="panel" aria-labelledby="clock-heading">
+      <h2 id="clock-heading" style="margin:0 0 .75rem;font-size:1rem;">Manila information clock</h2>
+      <div class="table-scroll">
+        <table id="clock-table" class="data-table">
+          <thead><tr><th>Event</th><th>LA</th><th>Manila</th></tr></thead>
+          <tbody><tr><td colspan="3" class="micro" style="color:var(--ink-3)">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="history-heading">
+      <h2 id="history-heading" style="margin:0 0 .75rem;font-size:1rem;">Last 60 days</h2>
+      <div id="history-strip" class="history-strip">
+        <p class="dist-empty">Loading history…</p>
+      </div>
+    </section>
+  </div>
+
+
+  <!-- WHERE THE MODEL IS MOST ACCURATE. Every Kalshi daily temperature market
+       resolves on the same NWS Climatological Report, so they are directly
+       comparable. Ranked on bias-corrected MOS guidance rather than a trained
+       model per city — MOS needs only an ICAO, and at KLAX it sits ~6 points
+       under the shipped model, so read it as a floor. -->
+
+
+  <!-- THE APP'S BET. Replaces the old manual "MY BETS" form: Julian keeps his own
+       picks in a spreadsheet, and this is the app's side of the head-to-head.
+       Read-only by design — the ONLY writer is the launchd wake cycle, so a bet
+       exists only if the laptop was awake at the decision hour. A closed laptop
+       leaves a gap rather than a hindsight bet. Columns mirror his sheet exactly
+       so the two ledgers compare line for line. -->
+
+  </details>
+
+  <details class="more">
+    <summary>Field notes</summary>
+  <section id="field-notes" class="panel" aria-labelledby="field-notes-heading">
+    <div class="panel-head">
+      <h2 id="field-notes-heading" style="margin:0;font-size:1rem;">Field notes</h2>
+    </div>
+    <p class="notes-helper">Note what the sky/marine layer did — especially on days the
+      model felt off. One line is enough.</p>
+    <form id="note-form" novalidate class="note-form">
+      <div class="note-form-row">
+        <label class="eyebrow" for="note-date">Date</label>
+        <input type="date" id="note-date" class="note-date mono" required>
+      </div>
+      <textarea id="note-sky" class="note-textarea" rows="2" maxlength="500"
+                aria-label="What did the sky or marine layer do?"></textarea>
+      <div class="note-form-row note-form-actions">
+        <button type="submit" id="note-submit" class="note-submit" disabled>Log note</button>
+        <p id="note-status" class="note-status" role="status"></p>
+      </div>
+    </form>
+    <div id="notes-list" class="notes-list" aria-live="polite">
+      <p class="dist-empty">Loading notes…</p>
+    </div>
+  </section>
+  </details>
+</main>
+
+<footer class="page-footer">
+  <span id="update-indicator" class="mono">—</span>
+</footer>
+
+<script>
+(() => {
+"use strict";
+
+const SVGNS = "http://www.w3.org/2000/svg";
+const POLL_MS = 60000;
+
+const state = { today: null, timing: null, lastFetch: null, pollTimer: null, tickTimer: null, betMetric: "high", demo: null, demoLens: "daily_plan", gradeOpen: null };
+
+/* ---------------- helpers ---------------- */
+
+function el(tag, opts = {}, children = []) {
+  const node = document.createElement(tag);
+  if (opts.class) node.className = opts.class;
+  if (opts.text !== undefined) node.textContent = opts.text;
+  if (opts.attrs) for (const [k, v] of Object.entries(opts.attrs)) node.setAttribute(k, v);
+  for (const c of children) if (c) node.appendChild(c);
+  return node;
+}
+
+function svgEl(tag, attrs = {}) {
+  const node = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  return node;
+}
+
+function fmtF(x, digits = 1) {
+  return (x === null || x === undefined) ? "—" : `${x.toFixed(digits)}°F`;
+}
+
+function fmtPct(p) {
+  return (p === null || p === undefined) ? "—" : `${(p * 100).toFixed(1)}%`;
+}
+
+function fmtAgeMinutes(mins) {
+  if (mins === null || mins === undefined) return "—";
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60), m = mins % 60;
+  return `${h}h ${m}m`;
+}
+
+function fmtAgeFromIso(iso) {
+  if (!iso) return { text: "never", mins: null };
+  const mins = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
+  return { text: fmtAgeMinutes(mins), mins };
+}
+
+function ageClass(mins) {
+  if (mins === null) return "age-stale";
+  if (mins <= 20) return "";
+  if (mins <= 180) return "age-warn";
+  return "age-stale";
+}
+
+async function j(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${url} -> ${r.status}`);
+  return r.json();
+}
+
+/* ---------------- header ---------------- */
+
+function renderFlap(container, text) {
+  container.textContent = "";
+  for (const ch of text) {
+    const isPunct = !/[0-9]/.test(ch);
+    container.appendChild(el("span", { class: isPunct ? "flap-char punct" : "flap-char", text: ch }));
+  }
+}
+
+function roundHalfUp(x) {
+  return Math.floor(x + 0.5);
+}
+
+function renderHeader(today) {
+  document.getElementById("target-date").textContent = today.target_date || "—";
+  document.getElementById("ratchet-label").textContent =
+    (today.metric === "low" ? "Running min · ratchet" : "Running max · ratchet");
+  const rm = today.running_max;
+  const flap = document.getElementById("ratchet-flap");
+  const range = document.getElementById("ratchet-range");
+  const publicDisplay = document.getElementById("public-display");
+  if (rm) {
+    renderFlap(flap, `${rm.hi.toFixed(1)}°F`);
+    range.textContent = `confirmed range ${rm.lo.toFixed(2)}–${rm.hi.toFixed(2)}°F`;
+    // Public feeds (Kalshi UI, weather sites) re-derive °F from a whole °C
+    // reading, so they can display one degree above the precise sensor
+    // max. Only surface this when it actually differs -- no noise when
+    // the double-rounding happens to agree with the precise value.
+    if (rm.public_display_f !== undefined && rm.public_display_f !== null
+        && rm.public_display_f !== roundHalfUp(rm.hi)) {
+      publicDisplay.textContent = `public feeds show: ${rm.public_display_f}°F`;
+      publicDisplay.title = "Public displays round °F→°C→°F; settlement follows the precise sensor max.";
+      publicDisplay.hidden = false;
+    } else {
+      publicDisplay.hidden = true;
+      publicDisplay.textContent = "";
+      publicDisplay.removeAttribute("title");
+    }
+  } else {
+    renderFlap(flap, "—");
+    range.textContent = "no obs yet today";
+    publicDisplay.hidden = true;
+    publicDisplay.textContent = "";
+    publicDisplay.removeAttribute("title");
+  }
+
+  renderFreshnessInto("freshness-row", today);
+}
+
+/* ⚠️ ONE IMPLEMENTATION, TWO ROWS. The Miami tile needs the same chips, and a
+   second copy would drift — the ALERTS chip took three attempts to get right
+   and only one of them would have been fixed. `/api/today` gained a `station`
+   parameter on 2026-08-15 precisely so this row can exist; before that it
+   always answered for KLAX and a KMIA advisory could not be shown at all. */
+function renderFreshnessInto(rowId, today) {
+  const row = document.getElementById(rowId);
+  if (!row) return;
+  row.textContent = "";
+  const labels = { metar: "METAR", syn5: "SYN5", forecasts: "FCST", cli_reports: "CLI", alerts: "ALERTS" };
+  for (const [key, label] of Object.entries(labels)) {
+    const iso = today.freshness ? today.freshness[key] : null;
+    // An OPTIONAL source that was never switched on is not a failure. syn5 (the
+    // paid Synoptic sub-hourly feed) has no token, so its fetcher is a
+    // deliberate no-op — a permanent red "never" implied a broken pipeline and
+    // was pure noise on every screen.
+    if (key === "syn5" && today.freshness && today.freshness.syn5_disabled) {
+      const off = el("span", { class: "chip", attrs: {
+        title: "Optional Synoptic sub-hourly feed — no API token configured. "
+             + "The 6-hour ASOS extremum groups cover this need for free." } });
+      off.style.opacity = ".45";
+      off.appendChild(el("span", { class: "dot" }));
+      off.appendChild(el("span", { text: `${label} off` }));
+      row.appendChild(off);
+      continue;
+    }
+    // ⚠️ ALERTS IS EVENT-DRIVEN — ITS AGE IS NOT A HEALTH SIGNAL. No active NWS
+    // advisory means no rows, which is normal. KLAX went twelve days without
+    // one and this chip read "ALERTS 292h 38m" in warning amber, implying a
+    // dead feed when nothing was wrong. `highcast.staleness` exempts the table
+    // outright for the same reason. Show whether an advisory is LIVE instead.
+    if (key === "alerts") {
+      const n = today.freshness ? today.freshness.alerts_active : null;
+      const events = (today.freshness && today.freshness.alerts_active_events) || [];
+      const live = typeof n === "number" && n > 0;
+      const chip = el("span", { class: `chip ${live ? "age-warn" : ""}`, attrs: {
+        title: live
+          ? `Active now: ${events.join(", ")}`
+          : "No active NWS advisory. This feed is event-driven — silence is the "
+            + "normal state, not a stale feed."
+          + (iso ? `\nLast alert row fetched ${iso}` : "") } });
+      if (!live) chip.style.opacity = ".45";
+      chip.appendChild(el("span", { class: "dot" }));
+      chip.appendChild(el("span", { text: live ? `${label} ${events[0] || n}` : `${label} none` }));
+      row.appendChild(chip);
+      continue;
+    }
+    const { text, mins } = fmtAgeFromIso(iso);
+    const chip = el("span", { class: `chip ${ageClass(mins)}`, attrs: { title: iso || "no data received yet" } });
+    chip.appendChild(el("span", { class: "dot" }));
+    chip.appendChild(el("span", { text: `${label} ${text}` }));
+    row.appendChild(chip);
+  }
+}
+
+/* Miami's own chips. Its advisory, its METAR age — not KLAX's. */
+async function renderMiamiFreshness() {
+  try {
+    renderFreshnessInto("miami-freshness-row",
+                        await j("/api/today?metric=high&station=KMIA"));
+  } catch (err) { /* keep the last good row rather than blanking it */ }
+}
+
+/* ---------------- day grade ----------------
+   One chip per market: was this nowcast computed from clean, complete, current
+   inputs? A/B green, C amber, F red. Hover gives the failing checks.
+
+   ⚠️ THIS IS NOT AN ACCURACY FORECAST and the note under the strip says so in
+   the UI, not just in a tooltip. `scripts/day_grade_gate.py` measured every
+   candidate predictive factor and each flipped sign between markets; the
+   model's own probability is the accuracy estimate. Reading "A" as "this will
+   hit" is precisely the confusion that made the confidence gate invert P&L. */
+async function renderDayGrade() {
+  const row = document.getElementById("daygrade-row");
+  let payloads;
+  try {
+    payloads = await Promise.all([
+      j("/api/day-grade"), j("/api/day-grade?station=KMIA"),
+    ]);
+  } catch (err) {
+    return;                       // keep the last good strip; never blank it
+  }
+  row.textContent = "";
+  let disclaimer = "";
+  let openGrade = null;
+  for (const p of payloads) {
+    for (const g of (p.grades || [])) {
+      disclaimer = g.disclaimer || disclaimer;
+      const bad = (g.checks || []).filter((c) => c.level === "warn" || c.level === "fail");
+      const info = (g.checks || []).filter((c) => c.level === "info");
+      const lines = [g.meaning];
+      for (const c of bad) lines.push(`\u26a0 ${c.name}: ${c.detail}`);
+      for (const c of info) if (c.detail) lines.push(`\u00b7 ${c.name}: ${c.detail}`);
+      lines.push("", g.disclaimer);
+      const cls = g.letter === "F" ? "g-f" : (g.letter === "C" ? "g-c" : "g-ok");
+      const key = `${g.station}:${g.metric}`;
+      // `title` is kept as a fallback for anyone who does get native tooltips,
+      // but the CLICK panel below is the real affordance — see the CSS note.
+      const chip = el("button", { class: `grade-chip ${cls}`,
+        attrs: { title: lines.join("\n"), type: "button",
+                 "aria-expanded": String(state.gradeOpen === key),
+                 "data-key": key } });
+      chip.appendChild(el("span", { class: "letter", text: g.letter }));
+      chip.appendChild(el("span", { text: `${g.station} ${g.metric}` }));
+      if (bad.length) chip.appendChild(el("span", { text: `· ${bad[0].name}` }));
+      chip.addEventListener("click", () => {
+        state.gradeOpen = state.gradeOpen === key ? null : key;
+        renderDayGrade();
+      });
+      row.appendChild(chip);
+      if (state.gradeOpen === key) openGrade = g;
+    }
+  }
+  if (disclaimer) {
+    row.appendChild(el("span", { class: "daygrade-note",
+                                 text: "input quality only — not a hit-rate forecast" }));
+  }
+  renderGradeDetail(openGrade);
+}
+
+/* The expanded card. Every check, not just the failing ones — a reader needs to
+   see WHAT WAS CHECKED to trust an A, and "clean" with no list is not evidence. */
+function renderGradeDetail(g) {
+  const wrap = document.getElementById("daygrade-detail");
+  if (!wrap) return;
+  wrap.textContent = "";
+  if (!g) return;
+  const card = el("div", { class: "daygrade-card" });
+  card.appendChild(el("h4", { text:
+    `${g.station} ${g.metric} · grade ${g.letter} — ${g.meaning}` }));
+  const ul = el("ul");
+  for (const c of (g.checks || [])) {
+    const li = el("li", { class: `l-${c.level}` });
+    li.appendChild(el("span", { class: "lv", text: c.level }));
+    li.appendChild(el("span", { text: c.detail ? `${c.name} — ${c.detail}`
+                                                : c.name }));
+    ul.appendChild(li);
+  }
+  card.appendChild(ul);
+  card.appendChild(el("p", { class: "foot", text: g.disclaimer || "" }));
+  wrap.appendChild(card);
+}
+
+function renderStaleBanners(today, timing) {
+  const wrap = document.getElementById("stale-banners");
+  wrap.textContent = "";
+  // Once today's high is locked (post_peak) or reported (report_out), today's
+  // predictions are final by design — an age warning would be a false alarm.
+  if (timing && (timing.phase === "report_out" || timing.phase === "post_peak")) return;
+  const kinds = [["dayahead", "Day-ahead"], ["intraday", "Live"]];
+  for (const [key, label] of kinds) {
+    const pred = today[key];
+    if (pred && pred.stale) {
+      const hrs = (pred.age_minutes / 60).toFixed(1);
+      const banner = el("div", { class: "stale-banner" });
+      banner.appendChild(el("span", { class: "glyph", text: "⚠", attrs: { "aria-hidden": "true" } }));
+      const p = el("p", { text: "" });
+      p.style.margin = "0";
+      const b = document.createElement("b");
+      b.textContent = `${label} prediction is ${hrs}h old`;
+      p.appendChild(b);
+      p.appendChild(document.createTextNode(" — run "));
+      const code = document.createElement("code");
+      code.textContent = "highcast wake";
+      p.appendChild(code);
+      p.appendChild(document.createTextNode(" or wait for the next auto-cycle."));
+      banner.appendChild(p);
+      wrap.appendChild(banner);
+    }
+  }
+}
+
+/* ---------------- timing panel ---------------- */
+
+function renderTiming(timing) {
+  document.getElementById("timing-phase").textContent = timing.phase.replace(/_/g, " ");
+  document.getElementById("timing-headline").textContent = timing.headline;
+  document.getElementById("timing-detail").textContent = timing.detail;
+
+  const rec = timing.recommendation;
+  if (rec) {
+    document.getElementById("place-action").textContent = `PLACE: ${rec.action}`;
+    const win = document.getElementById("place-window");
+    win.textContent = "";
+    if (rec.window_manila === "now") {
+      win.appendChild(document.createTextNode("now"));
+    } else {
+      win.appendChild(document.createTextNode(rec.window_manila));
+      win.appendChild(el("span", { class: "pw-tz", text: "Manila" }));
+      win.appendChild(el("span", { class: "pw-la", text: `${rec.window_la} LA` }));
+    }
+    document.getElementById("place-target").textContent = `Target · ${rec.target_date}`;
+    document.getElementById("place-why").textContent = rec.why;
+
+    const pickEl = document.getElementById("model-pick");
+    const pick = rec.model_pick;
+    if (pick) {
+      const pct = (pick.prob * 100).toFixed(0);
+      const gate = pick.gate || {};
+      const actionable = pick.actionable;
+      const labelEl = document.getElementById("model-pick-label");
+      // Betting is EDGE-based: confidence stopped being a gate in the
+      // 2026-07-24 rewrite, so this label must NOT imply a confidence
+      // threshold blocks the trade. The only blocker shown here is the window;
+      // whether there is edge is the Decision Desk's job to say.
+      if (gate.within_window === false) {
+        labelEl.textContent = `MODEL PICK: ${pick.label}°F (${pct}%) · window closed — too late to act`;
+        labelEl.style.color = "var(--warn, #d9a441)";
+      } else {
+        labelEl.textContent = `MODEL PICK: ${pick.label}°F (${pct}%) · see Decision Desk for edge`;
+        labelEl.style.color = "";
+      }
+      pickEl.style.opacity = actionable ? "" : "0.75";
+      const isLive = pick.source === "intraday";
+      const srcEl = document.getElementById("model-pick-source");
+      srcEl.textContent = isLive ? "LIVE" : "DAY-AHEAD";
+      srcEl.classList.toggle("is-live", isLive);
+      srcEl.classList.toggle("is-dayahead", !isLive);
+      pickEl.hidden = false;
+    } else {
+      pickEl.hidden = true;
+    }
+  }
+
+  const next = document.getElementById("timing-next");
+  next.textContent = "";
+  const manilaBlock = el("div", {});
+  manilaBlock.appendChild(el("span", { class: "eyebrow tn-label", text: `Next: ${timing.next_transition.name} — Manila` }));
+  manilaBlock.appendChild(el("span", { class: "tn-manila mono", text: timing.next_transition.manila }));
+  const laBlock = el("div", {});
+  laBlock.appendChild(el("span", { class: "eyebrow tn-label", text: "LA" }));
+  laBlock.appendChild(el("span", { class: "tn-la mono", text: timing.next_transition.la }));
+  next.appendChild(manilaBlock);
+  next.appendChild(laBlock);
+
+  renderBestTime(timing);
+  document.getElementById("timing-disclaimer").textContent = timing.disclaimer;
+}
+
+/* ---------------- markets by city ---------------- */
+
+/* RESTORED 2026-08-28 for QUEUE 7. Display-only planning input — see the panel's
+   own caveat. `hit` here is a CLIMATOLOGICAL modal-bucket rate from
+   `cities.survey()`, NOT this desk's realised hit rate, and the two must never
+   be read as the same number. */
+async function renderCities() {
+  const host = document.getElementById("cities-body");
+  if (!host) return;
+  try {
+    const d = await j("/api/cities");
+    const rows = (d.rows || []).slice().sort((a, b) => (b.hit || 0) - (a.hit || 0));
+    host.textContent = "";
+    if (!rows.length) {
+      host.appendChild(el("p", { class: "dist-empty", text: "No city survey available." }));
+      return;
+    }
+    const head = el("div", { class: "city-row" });
+    ["City", "Metric", "", "MAE", "Hit"].forEach(t =>
+      head.appendChild(el("span", { class: "micro", text: t })));
+    host.appendChild(head);
+    const best = Math.max(...rows.map(r => r.hit || 0)) || 1;
+    rows.forEach(r => {
+      const row = el("div", { class: "city-row" + (r.is_current ? " is-current" : "") });
+      row.appendChild(el("span", { class: "city-name", text: r.city || "—" }));
+      row.appendChild(el("span", { class: "city-metric", text: r.metric || "" }));
+      // The surviving CSS expects a TRACK wrapping the BAR, not a bare bar.
+      const track = el("div", { class: "city-bartrack" });
+      const fill = el("div", { class: "city-bar" });
+      fill.style.width = `${Math.round(100 * (r.hit || 0) / best)}%`;
+      track.appendChild(fill);
+      row.appendChild(track);
+      row.appendChild(el("span", { class: "city-mae",
+        text: (r.mae === null || r.mae === undefined) ? "—" : r.mae.toFixed(2) }));
+      row.appendChild(el("span", { class: "city-hit",
+        text: (r.hit === null || r.hit === undefined) ? "—" : `${Math.round(r.hit * 100)}%` }));
+      host.appendChild(row);
+    });
+  } catch (err) {
+    /* planning panel: a hiccup here must never blank the desk */
+  }
+}
+
+
+// The climatology strip: this station's p10-p90 for this hour and season as a
+// track, p25-p75 as the shaded arc, today's reading as a tick. `role="img"` with
+// a spoken label because the placement IS the content -- a screen reader given
+// only "5.9°F" gets strictly less than the eye does.
+function climoStrip(band) {
+  const wrap = el("div", {
+    class: "board-strip" + (band.clamped ? " board-strip-out" : ""),
+    attrs: {
+      role: "img",
+      "aria-label": `${Math.round(band.pct)}th percentile for this hour and ` +
+                    `season — ${band.verdict}`,
+    },
+  });
+  wrap.appendChild(el("div", { class: "board-strip-track" }));
+  const arcLo = Math.max(0, Math.min(1, band.arc_lo === undefined ? 0.25 : band.arc_lo));
+  const arcHi = Math.max(0, Math.min(1, band.arc_hi === undefined ? 0.75 : band.arc_hi));
+  wrap.appendChild(el("div", { class: "board-strip-arc", attrs: {
+    style: `left:${(arcLo * 100).toFixed(1)}%;right:${((1 - arcHi) * 100).toFixed(1)}%` } }));
+  wrap.appendChild(el("div", { class: "board-strip-tick", attrs: {
+    style: `left:${(band.offset * 100).toFixed(1)}%` } }));
+  return wrap;
+}
+
+function renderBoard(data) {
+  const body = document.getElementById("board-body");
+  if (!body) return;
+  body.textContent = "";
+  const rows = (data && data.rows) || [];
+  if (!rows.length) { body.appendChild(el("p", { class: "dist-empty",
+    text: "no observations yet" })); return; }
+  const stallAt = (data && data.stall_note_hours) || 3;
+
+  let lastStation = null;
+  for (const r of rows) {
+    // The table now carries EVERY station, so mark where one ends and the
+    // next begins — four markets in an unlabelled run is unreadable.
+    if (r.station !== lastStation) {
+      lastStation = r.station;
+      body.appendChild(el("h3", { class: "board-station-rule", text: r.station }));
+    }
+    const sec = el("section", { class: "board-market" });
+    const head = el("div", { class: "board-mkt-head" });
+    head.appendChild(el("span", { class: "board-mkt-name",
+      text: `${r.station} · ${r.metric.toUpperCase()}` }));
+    head.appendChild(el("span", { class: "board-mkt-when",
+      text: `${r.target_date} · ${r.local_time} local` }));
+    sec.appendChild(head);
+
+    // ── two things already collected and shown nowhere until now ──────────
+    const extra = el("div", { class: "board-extra" });
+
+    // ENSEMBLE. 119 members. A wide, bimodal spread means two competing
+    // scenarios rather than one fuzzy answer, and a single-bucket bet on that
+    // is close to a coin toss however good the model is.
+    const e = r.ensemble;
+    if (e) {
+      const wide = e.spread >= 4 || (e.bimodality != null && e.bimodality >= 1.0);
+      extra.appendChild(el("div", { class: `board-chip ${wide ? "warn" : ""}` }, [
+        el("span", { class: "eyebrow", text: "Ensemble" }),
+        el("span", { class: "mono", text:
+          `${e.p10.toFixed(1)}–${e.p90.toFixed(1)}°F · spread ${e.spread.toFixed(1)}`
+          + (e.bimodality != null ? ` · bimodality ${e.bimodality.toFixed(2)}` : "") }),
+        el("span", { class: "board-chip-note", text: wide
+          ? "two competing scenarios — a single bucket is close to a coin toss"
+          : `${e.n_members} members agree within a narrow band` }),
+      ]));
+    }
+
+    // COVERAGE. ~75% is a NORMAL day: the six-hour groups spanning a climate
+    // day's start and end straddle the boundary and are inadmissible however
+    // well the station reports. A MISSING group is the actionable part.
+    const c = r.coverage;
+    if (c && c.day_minutes) {
+      const missing = (c.missing_groups || []).length > 0;
+      extra.appendChild(el("div", { class: `board-chip ${missing ? "warn" : ""}` }, [
+        el("span", { class: "eyebrow", text: "6-hour coverage" }),
+        el("span", { class: "mono",
+          text: `${c.covered_minutes}/${c.day_minutes} min · ${c.blind_minutes} blind` }),
+        el("span", { class: "board-chip-note", text: missing
+          ? `no group filed for ${c.missing_groups.map(m => m.slice(11, 16) + "Z").join(", ")}`
+              + " — between filings we are relying on hourly spot readings alone"
+          : "normal: the windows at the day's edges always straddle the boundary" }),
+      ]));
+    }
+    if (extra.childNodes.length) sec.appendChild(extra);
+    if (r.tmpf === null || r.tmpf === undefined) {
+      sec.appendChild(el("p", { class: "dist-empty", text: "no observations yet" }));
+      body.appendChild(sec); continue;
+    }
+
+    // ── today's verdict: is this instance of the market worth paying for? ──
+    const pf = r.preflight;
+    if (pf) {
+      // Words chosen for the decision, not the statistic. "Clear to trade" and
+      // "sit this one out" say what to do; "CLEAR"/"AVOID" alone would need a
+      // legend, and a legend on a 02:00 phone read is a legend nobody reads.
+      const LABEL = { CLEAR: "clear to trade", FAIR: "ordinary day",
+                      AVOID: "sit this one out" };
+      const cls = pf.band ? " board-verdict-" + pf.band.toLowerCase() : "";
+      const box = el("div", { class: "board-verdict" + cls });
+      box.appendChild(el("span", { class: "board-verdict-name",
+        text: pf.band ? LABEL[pf.band] :
+              (pf.status === "pending" ? "no read yet" : "no daily read") }));
+      const bd = el("div", { class: "board-verdict-body" });
+      bd.appendChild(el("span", { class: "board-verdict-note", text: pf.note || "" }));
+      if (pf.gap !== null && pf.gap !== undefined) {
+        bd.appendChild(el("span", { class: "board-verdict-gap",
+          text: `ratchet − guidance ${pf.gap >= 0 ? "+" : ""}${pf.gap.toFixed(2)}°F` +
+                (pf.n ? ` · measured on ${pf.n} days` : "") }));
+      }
+      box.appendChild(bd);
+      sec.appendChild(box);
+    }
+
+    // ── headline: what today settles to if nothing further moves ──────────
+    if (r.running_lo !== null && r.running_lo !== undefined) {
+      const stalled = r.stall_hours !== null && r.stall_hours >= stallAt;
+      const box = el("div", { class: "board-settle" });
+      box.appendChild(el("span", { class: "board-settle-fig",
+        text: String(r.settles_to) }));
+      const meta = el("div", { class: "board-settle-meta" });
+      meta.appendChild(el("span", { class: "board-settle-lab",
+        text: `settles to · running ${r.metric}` }));
+      meta.appendChild(el("span", { class: "board-settle-run",
+        text: `[${r.running_lo.toFixed(2)}, ${r.running_hi.toFixed(2)}]` }));
+      if (r.stall_hours !== null && r.stall_hours !== undefined) {
+        meta.appendChild(el("span", {
+          class: "board-settle-run" + (stalled ? " board-stalled" : ""),
+          text: `unchanged ${r.stall_hours.toFixed(1)}h` +
+                (stalled ? " — stalled" : "") }));
+      }
+      box.appendChild(meta);
+      sec.appendChild(box);
+    }
+
+    // ── can it still move? the one line that changes what you do next ─────
+    const n = r.next_group, g = r.latest_group;
+    if (n || g) {
+      const open = !!n;
+      const mv = el("div", { class: "board-move" + (open ? " board-move-open" : "") });
+      mv.appendChild(el("div", { class: "board-move-dot" }));
+      const txt = el("div", {});
+      txt.appendChild(el("span", { class: "board-move-lab",
+        text: open ? "can still move" : "settled" }));
+      txt.appendChild(el("span", { class: "board-move-txt", text: open
+        ? `${n.window} group files ${n.files_local} local · in ${n.hours_away.toFixed(1)}h`
+        : "every admissible 6-hour group is in" }));
+      mv.appendChild(txt);
+      sec.appendChild(mv);
+    }
+
+    // ── evidence, each reading placed on its own climatology ──────────────
+    const ev = r.evidence || [];
+    if (ev.length) {
+      const grid = el("div", { class: "board-ev" });
+      for (const e of ev) {
+        const row = el("div", { class: "board-ev-row" });
+        row.appendChild(el("span", { class: "board-ev-lab", text: e.label }));
+        row.appendChild(el("span", { class: "board-ev-val", text: e.text }));
+        if (e.band) {
+          row.appendChild(climoStrip(e.band));
+          row.appendChild(el("span", {
+            class: "board-ev-verdict" +
+              (e.band.verdict === "unusual" ? " board-ev-verdict-unusual" : ""),
+            text: e.band.verdict }));
+        } else {
+          // No pool deep enough to place this reading. Say so rather than
+          // drawing an empty track, which reads as "dead centre of normal".
+          // Carries `board-strip` so it collapses with the real strips at the
+          // mobile breakpoint instead of pushing the row onto two lines.
+          row.appendChild(el("span", { class: "board-strip" }));
+          row.appendChild(el("span", { class: "board-ev-verdict", text: "no history" }));
+        }
+        grid.appendChild(row);
+      }
+      sec.appendChild(grid);
+      sec.appendChild(el("p", { class: "board-ev-scale",
+        text: "Strip spans this station's 10th–90th percentile for this hour and " +
+              "season; the shaded arc is the middle half." }));
+    }
+
+    // ── provenance, footnote weight: wind bearing, sky, and the group ─────
+    const notes = [];
+    if (r.drct !== null && r.drct !== undefined) {
+      let w = `wind ${Math.round(r.drct)}° @ ${Math.round(r.sknt)}kt`;
+      if (r.onshore_component !== null && r.onshore_component !== undefined) {
+        w += ` · onshore ${r.onshore_component >= 0 ? "+" : ""}` +
+             `${r.onshore_component.toFixed(1)}kt vs ${Math.round(r.onshore_deg)}°`;
+      }
+      notes.push(w);
+    }
+    if (r.sky) notes.push(`sky ${r.sky}`);
+    if (r.pres_tend_hpa !== null && r.pres_tend_hpa !== undefined) {
+      const age = r.pres_tend_age_h ? `, ${Math.round(r.pres_tend_age_h)}h old` : "";
+      notes.push(`tendency ${r.pres_tend_hpa >= 0 ? "+" : ""}` +
+                 `${r.pres_tend_hpa.toFixed(1)} hPa/3h (${r.pres_tend_shape || "—"}${age})`);
+    }
+    if (g) {
+      notes.push(`6h ${r.metric} group ${g.window} filed ${g.files_local} · ` +
+                 `${g.celsius.toFixed(1)}°C = ${g.fahrenheit.toFixed(2)}°F`);
+    }
+    if (notes.length) {
+      sec.appendChild(el("p", { class: "board-note", text: notes.join("  ·  ") }));
+    }
+    body.appendChild(sec);
+  }
+
+  // Static per-market reliability. Deliberately at the BOTTOM of the panel: it
+  // is the same answer every day, so it is reference material rather than news.
+  const rel = (data && data.reliability) || [];
+  if (rel.length) {
+    const wrap = el("div", { class: "board-reliability" });
+    wrap.appendChild(el("h3", { text: "Which market to trust" }));
+    wrap.appendChild(el("p", { class: "rel-sub",
+      text: "Bar is what each market actually hits at its commit hour; the tick " +
+            "is what it claims. A tick right of the bar is the model promising " +
+            "more than it delivers." }));
+    const list = el("div", { class: "rel-list" });
+    for (const r of rel) {
+      const over = r.calib !== null && r.calib !== undefined && r.calib > 0;
+      const row = el("div", { class: "rel-row" +
+        (r.station === (data.station || "") ? " rel-mine" : "") +
+        (over ? " rel-over" : "") });
+      row.appendChild(el("span", { class: "rel-name",
+        text: `${r.station} ${r.metric.toUpperCase()} h${r.commit_hour}` }));
+      if (r.hit === null || r.hit === undefined) {
+        // Unmeasured markets stay visible: a missing row is a data gap worth
+        // seeing, the same contract `reliability_table` keeps when it sorts
+        // them last rather than hiding them.
+        row.appendChild(el("span", {}));
+        row.appendChild(el("span", { class: "rel-nums", text: "not measured" }));
+      } else {
+        const claim = r.calib === null || r.calib === undefined
+          ? null : r.hit + r.calib;
+        const meter = el("div", { class: "rel-meter", attrs: {
+          role: "img",
+          "aria-label": `hits ${(r.hit * 100).toFixed(1)} percent` +
+            (claim === null ? "" : `, claims ${(claim * 100).toFixed(1)} percent`) } });
+        meter.appendChild(el("div", { class: "rel-meter-track" }));
+        meter.appendChild(el("div", { class: "rel-meter-fill", attrs: {
+          style: `width:${(r.hit * 100).toFixed(1)}%` } }));
+        if (claim !== null) {
+          meter.appendChild(el("div", { class: "rel-meter-claim", attrs: {
+            style: `left:${(Math.max(0, Math.min(1, claim)) * 100).toFixed(1)}%` } }));
+        }
+        row.appendChild(meter);
+        const nums = el("span", { class: "rel-nums" });
+        nums.appendChild(el("b", { text: `${(r.hit * 100).toFixed(1)}%` }));
+        if (r.calib !== null && r.calib !== undefined) {
+          nums.appendChild(el("span", {
+            class: over ? "rel-over-txt" : "",
+            text: `  claims ${r.calib >= 0 ? "+" : ""}${(r.calib * 100).toFixed(1)}` }));
+        }
+        row.appendChild(nums);
+      }
+      // Kept on its own line rather than as a fourth column: accuracy alone
+      // flatters a market -- it climbs all day only because the answer stops
+      // being unknown -- so this must never be scanned past.
+      if (r.still_future !== null && r.still_future !== undefined) {
+        row.appendChild(el("span", { class: "rel-ahead",
+          text: `${Math.round(r.still_future * 100)}% of the extremum still ahead at commit` }));
+      }
+      list.appendChild(row);
+    }
+    wrap.appendChild(list);
+    body.appendChild(wrap);
+  }
+}
+
+function callCard(metric, bet, timing, selectable = true) {
+  const card = el("div", { class: "call-card" });
+  // THE TARGET DATE IS NOT OPTIONAL. Once today's window closes the desk rolls
+  // to tomorrow, so the card can be quoting a different climate day — and a
+  // different strike ladder — than the board below it. Without the date, "67–68"
+  // read as a bucket that did not exist in today's market.
+  const tgt = bet && bet.target;
+  const when_d = tgt
+    ? new Date(tgt + "T12:00:00Z").toLocaleDateString("en-GB",
+        { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" })
+    : "";
+  card.appendChild(el("span", { class: "call-metric",
+    text: `${metric} · ${when_d || "KLAX"}` }));
+
+  const d = bet && bet.decision;
+  // ONCE COMMITTED, THE LOCKED PICK *IS* THE RECOMMENDATION — for the whole
+  // window, not just for the app's own ledger. The live model refits every hour,
+  // so showing its current favourite meant the card said 69–70 at 19:00 and
+  // 68–69 at 21:00 with the window still open. A recommendation you cannot come
+  // back to is not a recommendation.
+  const lock = bet && bet.committed;
+  const bucket = (lock && lock.bucket) || (d && d.bucket)
+    || (bet && bet.has_pred ? "—" : "no forecast");
+  const bEl = el("div", { class: "call-bucket", text: bucket });
+  card.appendChild(bEl);
+
+  // WHEN. The station-local decision hour, rendered in Manila by the browser's
+  // own tz database so it tracks DST instead of a baked-in offset.
+  const knee = timing && timing.decision_hour;
+  const stationTz = (timing && timing.station_tz) || "America/Los_Angeles";
+  const displayTz = (timing && timing.display_tz) || "Asia/Manila";
+  const when = el("div", { class: "call-when" });
+  if (knee != null) {
+    when.appendChild(el("span", { class: "call-when-time",
+      text: stationHourToManila(knee, stationTz, displayTz) }));
+    when.appendChild(el("span", { class: "call-when-tz", text: "Manila" }));
+  }
+
+  // Status: is this actionable right now?
+  // THE TARGET DATE MATTERS. Once today's window closes the desk rolls to
+  // TOMORROW, whose decision hour has not arrived yet — comparing the current
+  // hour against the knee alone said "place now" at 17:37 local for a target
+  // whose window opens at 04:00 the NEXT day, ~10h later, and printed hour-4
+  // accuracy stats beside it.
+  const nowHour = +new Intl.DateTimeFormat("en-GB", {
+    timeZone: stationTz, hour: "2-digit", hour12: false }).format(new Date());
+  const todayLocal = new Intl.DateTimeFormat("en-CA", {
+    timeZone: stationTz, year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
+  const isFutureTarget = !!(tgt && tgt > todayLocal);
+  const hoursAway = knee == null ? null
+    : isFutureTarget ? (24 - nowHour) + knee
+    : (nowHour < knee ? knee - nowHour : 0);
+  const blocked = d && d.place === false && d.reason
+    && !/no edge/i.test(d.reason);
+  let cls = "call-status", label;
+  if (hoursAway) { label = `opens in ${hoursAway}h`; }
+  else if (timing && timing.window_open === false) { cls += " is-blocked"; label = "window closed"; }
+  else if (blocked) { cls += " is-blocked"; label = "not tradeable"; }
+  else { cls += " is-open"; label = "place now"; card.classList.add("is-open"); }
+  // A locked pick overrides the live status text: it is settled business.
+  if (lock) {
+    cls = "call-status is-open";
+    label = `locked ${lock.placed_manila}`;
+  }
+  when.appendChild(el("span", { class: cls, text: label }));
+  card.appendChild(when);
+  // Strike a bucket the desk has vetoed: it is not the call, and showing it at
+  // full weight reads as one.
+  if (blocked && !lock) bEl.classList.add("is-void");
+
+  // Selecting a card drives the board and ratchet below -- but that board is
+  // KLAX's (TODAY, Decision Desk, etc. all read `state.betMetric` against the
+  // KLAX endpoints), so only a KLAX card may drive it. The Miami tile reuses
+  // this same function for its own two cards (`selectable=false`); wiring its
+  // click to `state.betMetric` would silently flip KLAX's board to LOW/HIGH
+  // when someone was only trying to look at Miami, which is the KLAX surface
+  // changing behavior for a reason that has nothing to do with KLAX.
+  if (selectable) {
+    const key = metric.toLowerCase();
+    if (state.betMetric === key) card.classList.add("is-selected");
+    card.tabIndex = 0;
+    card.setAttribute("role", "button");
+    card.setAttribute("aria-pressed", String(state.betMetric === key));
+    const pick = () => { if (state.betMetric === key) return;
+                         state.betMetric = key; refreshLive(); };
+    card.addEventListener("click", pick);
+    card.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } });
+  }
+
+  // THE TWO NUMBERS, ALWAYS TOGETHER. Accuracy on its own is misleading here: it
+  // climbs through the day only because the extremum stops being unknown, so a
+  // "99%" hour is transcription, not skill. Pairing it with how much is still
+  // ahead is the honest reading and is the point of the whole panel.
+  const row = timing && (timing.timing_curve || []).find((r) => r.hour === knee);
+  if (row) {
+    // Label these as belonging to the DECISION hour, not to now — they are
+    // measured at hour `knee` and mean nothing at any other hour.
+    const conf = el("div", { class: "call-conf" });
+    const a = el("div", {});
+    a.appendChild(el("span", { class: "n", text: `${Math.round(row.hit * 100)}%` }));
+    a.appendChild(el("span", { class: "k",
+      text: hoursAway ? `bucket right at ${knee}:00` : "bucket right" }));
+    const b = el("div", {});
+    b.appendChild(el("span", { class: "n",
+      text: row.still_future == null ? "—" : `${Math.round(row.still_future * 100)}%` }));
+    b.appendChild(el("span", { class: "k", text: "still a forecast" }));
+    conf.appendChild(a); conf.appendChild(b);
+    card.appendChild(conf);
+  }
+
+  // If the model has since moved, say so plainly BUT DO NOT CHANGE THE PICK.
+  // The whole point of locking is that the answer stays put; the drift is
+  // information, not a new recommendation.
+  if (lock && d && d.bucket && d.bucket !== lock.bucket) {
+    const moved = el("p", { class: "call-why",
+      text: `Model has since moved to ${d.bucket} — your call stays ${lock.bucket}.` });
+    moved.style.color = "var(--ink-3)";
+    card.appendChild(moved);
+  }
+  // A locked bet keeps the reason that was TRUE WHEN IT LOCKED. The live desk
+  // has moved on (the HIGH read "-27%" at lock and "-6%" hours later, both
+  // correct for their moment), so the card must stamp which one it is showing.
+  // A very large edge against a liquid book is the signature of a BROKEN MODEL,
+  // not free money — twice already in this project (+43% and +58%, both caught on
+  // real money, both bugs). The card used to present a +48% edge in exactly the
+  // same neutral tone as a +5% one. Flag it; do not hide it.
+  const edge = d && typeof d.edge === "number" ? d.edge : null;
+  if (edge !== null && edge >= 0.25 && !lock) {
+    const warn = el("p", { class: "call-why",
+      text: `⚠ ${Math.round(edge * 100)}% edge against a live market. An edge this `
+          + `large is usually the model being wrong, not the market. Check before acting.` });
+    warn.style.color = "var(--danger)";
+    warn.style.fontWeight = "600";
+    card.appendChild(warn);
+  }
+
+  const reasonText = (lock && lock.reason)
+    ? `At lock (${lock.placed_manila}): ${lock.reason}`
+    : (d && d.reason);
+  if (reasonText) {
+    const why = el("p", { class: "call-why", text: reasonText });
+    if (blocked && !lock) why.classList.add("is-blocked");
+    card.appendChild(why);
+  }
+  return card;
+}
+
+async function renderTheCall() {
+  const grid = document.getElementById("call-grid");
+  if (!grid) return;
+  try {
+    const [bl, bh, tl, th] = await Promise.all([
+      j("/api/bet?metric=low"), j("/api/bet?metric=high"),
+      j("/api/timing?metric=low"), j("/api/timing?metric=high")]);
+    grid.textContent = "";
+    grid.appendChild(callCard("LOW", bl, tl));
+    grid.appendChild(callCard("HIGH", bh, th));
+  } catch (err) {
+    /* keep the last good card rather than blanking the answer on a blip */
+  }
+}
+
+// MIAMI. Same shape as renderTheCall() above, station-parameterised via
+// ?station=KMIA on the same two endpoints -- callCard() itself needed no
+// change, since /api/bet and /api/timing already return whichever station's
+// data was asked for. A separate try/catch from renderTheCall() so a Miami
+// fetch hiccup (e.g. its LOW model is unbuilt -- see HANDOFF) never blanks the
+// KLAX cards, and vice versa.
+async function renderMiamiCall() {
+  const grid = document.getElementById("miami-call-grid");
+  if (!grid) return;
+  try {
+    const [bl, bh, tl, th] = await Promise.all([
+      j("/api/bet?metric=low&station=KMIA"), j("/api/bet?metric=high&station=KMIA"),
+      j("/api/timing?metric=low&station=KMIA"), j("/api/timing?metric=high&station=KMIA")]);
+    grid.textContent = "";
+    grid.appendChild(callCard("LOW", bl, tl, false));
+    grid.appendChild(callCard("HIGH", bh, th, false));
+  } catch (err) {
+    /* keep the last good card rather than blanking the answer on a blip */
+  }
+}
+
+/* ---------------- best time to place ---------------- */
+
+// `stationTz`-local hour -> Manila wall clock, for WHATEVER station's timing
+// data is passed in (KLAX -8/-7, KMIA -5/-4 -- the offset is never assumed).
+// Uses the browser's own tz database, both for `stationTz` and for `displayTz`,
+// so it stays correct across each zone's own DST rules (Manila is LA+15h in
+// PDT/LA+16h in PST, but LA+12h/LA+11h for KMIA's own DST) instead of
+// hardcoding an offset that silently breaks on the next clock change -- this
+// function used to be named `laHourToManila`, which was already misleading
+// before Miami existed to prove it: nothing in the body was LA-specific, only
+// the name was. Renamed rather than duplicated once a second station needed it.
+function stationHourToManila(hour, stationTz, displayTz) {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: stationTz, year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(now).reduce((a, p) => (a[p.type] = p.value, a), {});
+  // Find the UTC instant whose station-local wall clock is `hour` today.
+  for (let guess = 0; guess < 48; guess++) {
+    const t = new Date(Date.UTC(+parts.year, +parts.month - 1, +parts.day, guess, 0));
+    const lh = +new Intl.DateTimeFormat("en-GB", {
+      timeZone: stationTz, hour: "2-digit", hour12: false }).format(t);
+    if (lh === hour) {
+      return new Intl.DateTimeFormat("en-GB", {
+        timeZone: displayTz, hour: "2-digit", minute: "2-digit", hour12: false,
+      }).format(t);
+    }
+  }
+  return "--:--";
+}
+
+function renderBestTime(timing) {
+  const curve = timing.timing_curve || [];
+  const knee = timing.decision_hour;
+  const stationTz = timing.station_tz || "America/Los_Angeles";
+  const displayTz = timing.display_tz || "Asia/Manila";
+  if (!curve.length || knee == null) return;
+
+  // The hero (time / status / why) moved to THE CALL, which states it once and
+  // states it better. Only the curve and table live here now, so these nodes are
+  // optional — guard rather than throw and take the whole render down with them.
+  const pick = curve.find((r) => r.hour === knee);
+  const set = (id, txt) => { const n = document.getElementById(id);
+                             if (n) n.textContent = txt; };
+  set("besttime-manila", stationHourToManila(knee, stationTz, displayTz));
+  set("besttime-la", `${String(knee).padStart(2, "0")}:00 local`);
+
+  // open / waiting / closed, from the station's CURRENT hour
+  const nowLocalHour = +new Intl.DateTimeFormat("en-GB", {
+    timeZone: stationTz, hour: "2-digit", hour12: false }).format(new Date());
+  const st = document.getElementById("besttime-state");
+  const open = timing.window_open;
+  if (st) st.className = "besttime-state " +
+    (open === false ? "is-closed" : nowLocalHour >= knee ? "is-open" : "is-waiting");
+  if (st) st.textContent = open === false ? "window closed"
+    : nowLocalHour >= knee ? "open now"
+    : `opens in ${knee - nowLocalHour}h`;
+
+  const whyNode = document.getElementById("besttime-why");
+  if (pick && whyNode) {
+    whyNode.textContent =
+      `At this hour the model's bucket is right ${Math.round(pick.hit * 100)}% of the time ` +
+      `(MAE ${pick.mae.toFixed(2)}°F), and the ${timing.metric === "low" ? "minimum" : "maximum"} ` +
+      `has still not happened on ${Math.round(pick.still_future * 100)}% of days — so it is a ` +
+      `forecast, not a reading. Waiting longer raises accuracy only because the answer stops ` +
+      `being unknown.`;
+  }
+
+  drawTimingCurve(curve, knee, stationTz, displayTz);
+
+  const tb = document.querySelector("#besttime-table tbody");
+  tb.textContent = "";
+  for (const r of curve) {
+    const tr = el("tr", {});
+    if (r.hour === knee) tr.style.fontWeight = "700";
+    tr.appendChild(el("td", { class: "mono", text: `${String(r.hour).padStart(2, "0")}:00` }));
+    tr.appendChild(el("td", { class: "mono", text: stationHourToManila(r.hour, stationTz, displayTz) }));
+    tr.appendChild(el("td", { class: "mono", text: `${Math.round(r.hit * 100)}%` }));
+    tr.appendChild(el("td", { class: "mono", text: r.mae.toFixed(2) }));
+    tr.appendChild(el("td", { class: "mono",
+      text: r.still_future == null ? "—" : `${Math.round(r.still_future * 100)}%` }));
+    tb.appendChild(tr);
+  }
+}
+
+// ONE AXIS: y is bucket hit rate only. The "already happened" dimension is a
+// background band, never a second y-scale — a dual-axis chart here would invite
+// reading the crossover as meaningful when the two units share nothing.
+function drawTimingCurve(curve, knee, stationTz, displayTz) {
+  const W = 560, H = 132, ML = 30, MR = 8, MT = 10, MB = 20;
+  const iw = W - ML - MR, ih = H - MT - MB;
+  const hrs = curve.map((r) => r.hour);
+  const h0 = Math.min(...hrs), h1 = Math.max(...hrs);
+  const x = (h) => ML + ((h - h0) / (h1 - h0)) * iw;
+  const y = (v) => MT + (1 - v) * ih;
+
+  const NS = "http://www.w3.org/2000/svg";
+  const mk = (n, a) => { const e = document.createElementNS(NS, n);
+    for (const k in a) e.setAttribute(k, a[k]); return e; };
+  const svg = mk("svg", { viewBox: `0 0 ${W} ${H}`, role: "img",
+    "aria-label": "Model bucket accuracy by hour of day" });
+
+  // Band: hours where the extremum has usually ALREADY occurred (<50% still
+  // ahead). Accuracy there is transcription, not skill.
+  const past = curve.filter((r) => r.still_future != null && r.still_future < 0.5);
+  if (past.length) {
+    svg.appendChild(mk("rect", { x: x(past[0].hour), y: MT,
+      width: Math.max(0, x(h1) - x(past[0].hour)), height: ih,
+      fill: "currentColor", opacity: ".055" }));
+    const lbl = mk("text", { x: x(past[0].hour) + 4, y: MT + 10,
+      "font-size": "8.5", fill: "currentColor", opacity: ".5" });
+    lbl.textContent = "usually already decided";
+    svg.appendChild(lbl);
+  }
+
+  for (const v of [0.25, 0.5, 0.75, 1.0]) {           // recessive grid
+    svg.appendChild(mk("line", { x1: ML, x2: W - MR, y1: y(v), y2: y(v),
+      stroke: "currentColor", "stroke-opacity": ".13", "stroke-width": "1" }));
+    const t = mk("text", { x: ML - 5, y: y(v) + 3, "text-anchor": "end",
+      "font-size": "8.5", fill: "currentColor", opacity: ".55" });
+    t.textContent = `${Math.round(v * 100)}%`;
+    svg.appendChild(t);
+  }
+
+  const d = curve.map((r, i) => `${i ? "L" : "M"}${x(r.hour).toFixed(1)},${y(r.hit).toFixed(1)}`).join("");
+  svg.appendChild(mk("path", { d, fill: "none", stroke: "currentColor",
+    "stroke-width": "2", "stroke-linejoin": "round", "stroke-linecap": "round",
+    opacity: ".85" }));
+
+  for (const r of curve) {                             // hover targets + tooltip
+    const g = mk("g", {});
+    g.appendChild(mk("circle", { cx: x(r.hour), cy: y(r.hit), r: "9",
+      fill: "transparent" }));
+    if (r.hour === knee) {
+      g.appendChild(mk("circle", { cx: x(r.hour), cy: y(r.hit), r: "5.5",
+        fill: "var(--good)", stroke: "var(--surface)", "stroke-width": "2" }));
+    }
+    const ttl = document.createElementNS(NS, "title");
+    ttl.textContent = `${String(r.hour).padStart(2, "0")}:00 local · ` +
+      `${stationHourToManila(r.hour, stationTz, displayTz)} Manila — ` +
+      `hit ${Math.round(r.hit * 100)}%, MAE ${r.mae.toFixed(2)}°F` +
+      (r.still_future == null ? "" : `, ${Math.round(r.still_future * 100)}% still ahead`);
+    g.appendChild(ttl);
+    svg.appendChild(g);
+  }
+
+  for (const h of hrs.filter((h) => h % 6 === 0)) {    // x labels
+    const t = mk("text", { x: x(h), y: H - 6, "text-anchor": "middle",
+      "font-size": "8.5", fill: "currentColor", opacity: ".55" });
+    t.textContent = `${String(h).padStart(2, "0")}`;
+    svg.appendChild(t);
+  }
+  const host = document.getElementById("besttime-chart");
+  host.textContent = "";
+  host.appendChild(svg);
+}
+
+/* ---------------- bucket board ---------------- */
+
+/* The one number the desk was missing on 2026-08-18: Kalshi paid 36% for the
+   rung that settled while the model had it at 2.6%, and nothing on this page
+   said so. The day grade was a clean B and was RIGHT to be — every INPUT was
+   fine; the distribution was not, and no plumbing check watches distributions.
+   Display only — see the CSS note and `marketsensor.disagreement`. */
+function disagreeLine(d, label) {
+  const pct = (x) => `${Math.round(x * 100)}%`;
+  const frag = document.createDocumentFragment();
+  if (label) frag.appendChild(el("strong", { text: `${label} ` }));
+  frag.appendChild(el("span", { text: "market outbids us most on" }));
+  frag.appendChild(el("strong", { text: ` ${d.label}` }));
+  frag.appendChild(el("span", {
+    text: ` — Kalshi ${pct(d.market)} vs our ${pct(d.model)}` }));
+  frag.appendChild(el("span", { class: "gap",
+    text: ` (${d.gap >= 0 ? "+" : ""}${pct(d.gap)})` }));
+  return frag;
+}
+
+/* Worth showing? Tied to DISPLAY PRECISION, not to any measured threshold. */
+function disagreeWorthShowing(d) {
+  return !!d && Math.round((d.gap || 0) * 100) >= 1;
+}
+
+/* Miami has its own section fed by /api/bet + /api/timing, so it needs its own
+   row — the same station-aware split already made for the freshness chips. */
+async function renderMiamiDisagreement() {
+  const row = document.getElementById("miami-disagree-row");
+  if (!row) return;
+  try {
+    const [hi, lo] = await Promise.all([
+      j("/api/today?station=KMIA&metric=high"),
+      j("/api/today?station=KMIA&metric=low")]);
+    row.textContent = "";
+    const shown = [["HIGH", hi.disagreement], ["LOW", lo.disagreement]]
+      .filter(([, d]) => disagreeWorthShowing(d));
+    if (!shown.length) { row.hidden = true; return; }
+    row.hidden = false;
+    shown.forEach(([m, d], i) => {
+      if (i) row.appendChild(el("span", { class: "who", text: " · " }));
+      row.appendChild(disagreeLine(d, m));
+    });
+    row.appendChild(el("span", { class: "who",
+      text: " · display only, not a signal to trade" }));
+  } catch (err) {
+    /* keep the last good line rather than blanking it on a blip */
+  }
+}
+
+function renderDisagreement(d) {
+  const row = document.getElementById("disagree-row");
+  if (!row) return;
+  row.textContent = "";
+  // ⚠️ HIDE WHEN THE PRINTED NUMBER WOULD BE "+0%". The market agreeing with us
+  // is the common case, and a sentence reading "Kalshi 95% vs our 95% (+0%)"
+  // asserts a disagreement that does not exist. The cut is tied to the DISPLAY
+  // PRECISION, not to any measured threshold -- if the figure rounds away there
+  // is no sentence to write.
+  if (!disagreeWorthShowing(d)) { row.hidden = true; return; }
+  row.hidden = false;
+  row.appendChild(disagreeLine(d, null));
+  row.appendChild(el("span", { class: "who",
+    text: ` · vs the ${d.kind === "dayahead" ? "day-ahead" : "nowcast"}, the model the desk would act on now · display only, not a signal to trade` }));
+}
+
+function renderBuckets(today) {
+  const board = document.getElementById("bucket-board");
+  const badge = document.getElementById("bucket-source-badge");
+  const headingDate = document.getElementById("bucket-heading-date");
+  if (headingDate) headingDate.textContent = `· ${today.target_date || "—"}`;
+  board.textContent = "";
+
+  renderDisagreement(today.disagreement);
+
+  const market = today.kalshi_market;
+  if (market && market.length) {
+    setSourceBadge(badge, true);
+    renderMarketCards(board, market, today.running_max);
+    return;
+  }
+  setSourceBadge(badge, false);
+
+  const buckets = today.kalshi_buckets || [];
+  if (!buckets.length) {
+    board.appendChild(el("p", { class: "dist-empty", text: "No prediction available yet for today." }));
+    return;
+  }
+
+  let modalIdx = -1, modalP = -1;
+  buckets.forEach((b, i) => {
+    if (b.dead) return;
+    const p = b.p_intraday ?? b.p_dayahead;
+    if (p !== null && p !== undefined && p > modalP) { modalP = p; modalIdx = i; }
+  });
+
+  buckets.forEach((b, i) => {
+    const card = el("div", { class: `bucket-card${b.dead ? " is-dead" : ""}${i === modalIdx ? " is-modal" : ""}` });
+
+    const labelRow = el("div", { class: "bucket-label-row" });
+    labelRow.appendChild(el("span", { class: "bucket-label", text: `${b.label}°F` }));
+    if (i === modalIdx) labelRow.appendChild(el("span", { class: "bucket-modal-tag", text: "MODAL" }));
+    else if (b.dead) labelRow.appendChild(el("span", { class: "bucket-dead-tag", text: "OUT" }));
+    card.appendChild(labelRow);
+
+    card.appendChild(pRow("dayahead", b.p_dayahead));
+    card.appendChild(pRow("live", b.p_intraday));
+
+    board.appendChild(card);
+  });
+}
+
+function setSourceBadge(badge, isLive) {
+  if (!badge) return;
+  badge.textContent = isLive ? "LIVE MARKET" : "SYNTHETIC RANGES";
+  badge.classList.toggle("is-live", isLive);
+}
+
+/* Real Kalshi market ranges: label, market price (neutral), model day-ahead
+   (orange), model live (blue). kalshi_market doesn't carry its own `dead`
+   flag (it's keyed straight off the model's per-degree pmf, not the
+   synthetic bucket layout), so dead-strikeout is recomputed here with the
+   same running-max rule as the synthetic board: a range is dead once its
+   whole span is below the confirmed running max; open tails (hi == null)
+   are never dead. `runningMax` is null for a future date (nothing can be
+   ruled out yet), so nothing is ever marked dead there. */
+function renderMarketCards(board, market, runningMax) {
+  const deadFloor = runningMax ? Math.floor(runningMax.lo) : null;
+  const isDead = (hi) => deadFloor !== null && hi !== null && hi !== undefined && hi < deadFloor;
+
+  market.forEach((r) => {
+    const dead = isDead(r.hi);
+    const card = el("div", { class: `bucket-card${dead ? " is-dead" : ""}` });
+
+    const labelRow = el("div", { class: "bucket-label-row" });
+    labelRow.appendChild(el("span", { class: "bucket-label", text: `${r.label}°F` }));
+    if (dead) labelRow.appendChild(el("span", { class: "bucket-dead-tag", text: "OUT" }));
+    card.appendChild(labelRow);
+
+    card.appendChild(pRow("market", r.market_price));
+    card.appendChild(pRow("dayahead", r.p_model_dayahead));
+    card.appendChild(pRow("live", r.p_model_intraday));
+
+    board.appendChild(card);
+  });
+}
+
+function pRow(kind, p) {
+  const row = el("div", { class: `p-row${p === null || p === undefined ? " p-empty" : ""}` });
+  const track = el("div", { class: "p-track" });
+  const fill = el("div", { class: `p-fill ${kind}` });
+  fill.style.width = `${Math.min(100, (p || 0) * 100)}%`;
+  track.appendChild(fill);
+  row.appendChild(track);
+  row.appendChild(el("span", { class: `p-value ${kind}`, text: fmtPct(p) }));
+  return row;
+}
+
+/* ---------------- tomorrow's market card ---------------- */
+
+function renderTomorrow(today) {
+  const tm = today.tomorrow;
+  const dateEl = document.getElementById("tomorrow-date");
+  const headingDate = document.getElementById("tomorrow-heading-date");
+  const badge = document.getElementById("tomorrow-source-badge");
+  const body = document.getElementById("tomorrow-body");
+  body.textContent = "";
+  dateEl.textContent = `Target · ${tm ? tm.target_date : "—"}`;
+  if (headingDate) headingDate.textContent = `· ${tm ? tm.target_date : "—"}`;
+
+  const pred = tm && tm.prediction;
+  if (!pred) {
+    setSourceBadge(badge, false);
+    body.appendChild(el("p", { class: "dist-empty", text: "no forecast yet — generates 08:00 Manila" }));
+    return;
+  }
+
+  const q = pred.quantiles || {};
+  const stats = el("div", { class: "tomorrow-stats" });
+  const mk = (label, valueNode) => {
+    const block = el("div", { class: "readout-block" });
+    block.appendChild(el("span", { class: "eyebrow", text: label }));
+    block.appendChild(valueNode);
+    return block;
+  };
+  stats.appendChild(mk("Point", el("span", { class: "ts-value", text: fmtF(pred.point) })));
+  stats.appendChild(mk("p10–p90", el("span", { class: "ts-sub", text: `${fmtF(q["0.1"] ?? null)} – ${fmtF(q["0.9"] ?? null)}` })));
+  const issued = el("span", { class: "ts-sub", text: `${fmtAgeMinutes(pred.age_minutes)} ago` });
+  if (pred.stale) issued.appendChild(el("span", { class: "stale-badge", text: "STALE" }));
+  stats.appendChild(mk("Issued", issued));
+  body.appendChild(stats);
+
+  const market = tm.kalshi_market;
+  if (market && market.length) {
+    setSourceBadge(badge, true);
+    const board = el("div", { class: "bucket-board" });
+    // tomorrow is always a future date: nothing is confirmed dead yet.
+    renderMarketCards(board, market, null);
+    body.appendChild(board);
+    return;
+  }
+  setSourceBadge(badge, false);
+
+  const top = (tm.kalshi_buckets || [])
+    .filter(b => b.p_dayahead !== null && b.p_dayahead !== undefined)
+    .sort((a, b) => b.p_dayahead - a.p_dayahead)
+    .slice(0, 3);
+  if (top.length) {
+    const board = el("div", { class: "bucket-board" });
+    top.forEach((b, i) => {
+      const card = el("div", { class: `bucket-card${i === 0 ? " is-modal" : ""}` });
+      const labelRow = el("div", { class: "bucket-label-row" });
+      labelRow.appendChild(el("span", { class: "bucket-label", text: `${b.label}°F` }));
+      if (i === 0) labelRow.appendChild(el("span", { class: "bucket-modal-tag", text: "MODAL" }));
+      card.appendChild(labelRow);
+      card.appendChild(pRow("dayahead", b.p_dayahead));
+      board.appendChild(card);
+    });
+    body.appendChild(board);
+  }
+}
+
+/* ---------------- per-degree distribution chart ---------------- */
+
+/* THE LADDER BOUNDARY, MADE VISIBLE.
+   Settlement ROUNDS, so what decides the bucket is not the forecast but which
+   side of a `hi + 0.5` line it lands on. A median sitting a quarter-degree from
+   that line makes the favoured bucket flip on refit noise while the forecast
+   does not move — KMIA high 2026-08-23 went 94–95 -> 92–93 on a 0.05F change in
+   p50, because q0.55/q0.60 crossed 93.5. The bars alone cannot show this: the
+   chart is per-DEGREE and the ladder is per-TWO-degrees, so the line that
+   matters falls BETWEEN columns and was invisible. */
+function ladderBands(market, degrees) {
+  if (!market || !market.length || !degrees.length) return [];
+  const idx = (d) => degrees.indexOf(d);
+  const out = [];
+  market.forEach((r, i) => {
+    // Open ends run to the edge of whatever the chart happens to cover.
+    const a = (r.lo === null || r.lo === undefined) ? 0 : idx(r.lo);
+    const b = (r.hi === null || r.hi === undefined) ? degrees.length - 1 : idx(r.hi);
+    const lo = a < 0 ? (r.lo > degrees[degrees.length - 1] ? null : 0) : a;
+    const hi = b < 0 ? (r.hi < degrees[0] ? null : degrees.length - 1) : b;
+    if (lo === null || hi === null || hi < lo) return;
+    out.push({ i0: lo, i1: hi, label: r.label, alt: i % 2 === 1,
+               edge: (r.hi === null || r.hi === undefined) ? null : r.hi + 0.5 });
+  });
+  return out;
+}
+
+/* How far the median sits from the nearest rounding line, and therefore how
+   twitchy the favoured bucket is. Reported, never used to gate anything. */
+function boundaryDistance(p50, market) {
+  if (p50 === null || p50 === undefined || !market || !market.length) return null;
+  const edges = market.map(r => (r.hi === null || r.hi === undefined) ? null : r.hi + 0.5)
+    .filter(e => e !== null);
+  if (!edges.length) return null;
+  // ⚠️ OPEN TAILS FIRST. When the median sits beyond the last enumerated rung
+  // the nearest EDGE is a real number but a misleading frame: it reads as if
+  // the forecast were mid-ladder when it is actually off the end of it. Caught
+  // on the live board 2026-08-23 — KLAX high median 87.44 against a ladder
+  // topping at ≥85 rendered as "nearest edge 84.5, 2.94 away", which invites
+  // exactly the wrong conclusion. Off the ladder is not a near-boundary case;
+  // it is a disagreement with the market about the whole range.
+  const top = Math.max(...edges), bot = Math.min(...edges);
+  const first = market[0], last = market[market.length - 1];
+  if (p50 > top) return { outside: "above", label: last.label, dist: p50 - top };
+  if (p50 < bot) return { outside: "below", label: first.label, dist: bot - p50 };
+  let best = null;
+  edges.forEach(e => {
+    const d = Math.abs(p50 - e);
+    if (best === null || d < best.dist) best = { edge: e, dist: d, outside: null };
+  });
+  return best;
+}
+
+function renderDistChart(today) {
+  const host = document.getElementById("dist-chart");
+  host.textContent = "";
+
+  const da = (today.dayahead && today.dayahead.buckets) || {};
+  const li = (today.intraday && today.intraday.buckets) || {};
+  const degrees = Array.from(new Set([...Object.keys(da), ...Object.keys(li)].map(Number))).sort((a, b) => a - b);
+
+  if (!degrees.length) {
+    host.appendChild(el("p", { class: "dist-empty", text: "No per-degree distribution available yet for today." }));
+    return;
+  }
+
+  const maxP = Math.max(0.001, ...degrees.map(d => Math.max(da[d] || 0, li[d] || 0)));
+  const yMax = maxP * 1.2;
+
+  const colW = 34;
+  const padL = 46, padR = 16, padT = 14, padB = 30;
+  const plotW = degrees.length * colW;
+  const plotH = 190;
+  const w = plotW + padL + padR;
+  const h = plotH + padT + padB;
+
+  const scroller = el("div", { class: "dist-scroll" });
+  const shell = el("div", { class: "dist-svg-shell" });
+  const svg = svgEl("svg", { viewBox: `0 0 ${w} ${h}`, width: w, height: h, role: "img",
+    "aria-label": "Per-degree probability distribution, day-ahead versus live" });
+
+  const css = getComputedStyle(document.documentElement);
+  const cGrid = css.getPropertyValue("--border").trim();
+  const cAxis = css.getPropertyValue("--border-strong").trim();
+  const cMuted = css.getPropertyValue("--ink-3").trim();
+  const cDayahead = css.getPropertyValue("--dayahead").trim();
+  const cLive = css.getPropertyValue("--live").trim();
+
+  const yTicks = 4;
+  for (let t = 0; t <= yTicks; t++) {
+    const val = (yMax / yTicks) * t;
+    const y = padT + plotH - (val / yMax) * plotH;
+    svg.appendChild(svgEl("line", { x1: padL, x2: padL + plotW, y1: y, y2: y, stroke: cGrid, "stroke-width": 1 }));
+    const label = svgEl("text", { x: padL - 8, y: y + 3, "text-anchor": "end", "font-size": 9, fill: cMuted, "font-family": "var(--font-mono)" });
+    label.textContent = `${(val * 100).toFixed(0)}%`;
+    svg.appendChild(label);
+  }
+  svg.appendChild(svgEl("line", { x1: padL, x2: padL + plotW, y1: padT + plotH, y2: padT + plotH, stroke: cAxis, "stroke-width": 1 }));
+
+  // ── LADDER BANDS + BOUNDARY LINES, drawn BEFORE the bars so they sit behind.
+  const bands = ladderBands(today.kalshi_market, degrees);
+  bands.forEach((b) => {
+    const x0 = padL + b.i0 * colW;
+    const x1 = padL + (b.i1 + 1) * colW;
+    if (b.alt) {
+      svg.appendChild(svgEl("rect", { x: x0, y: padT, width: x1 - x0, height: plotH,
+        fill: cGrid, opacity: 0.28 }));
+    }
+    if (x1 - x0 >= 30) {
+      const t = svgEl("text", { x: (x0 + x1) / 2, y: padT + 9, "text-anchor": "middle",
+        "font-size": 8.5, fill: cMuted, "font-family": "var(--font-mono)" });
+      t.textContent = b.label;
+      svg.appendChild(t);
+    }
+    // The rounding line itself, at the RIGHT edge of the band.
+    if (b.edge !== null && b.i1 < degrees.length - 1) {
+      svg.appendChild(svgEl("line", { x1: x1, x2: x1, y1: padT, y2: padT + plotH,
+        stroke: cAxis, "stroke-width": 1.25, opacity: 0.85 }));
+    }
+  });
+
+  const tooltip = el("div", { class: "dist-tooltip", attrs: { role: "status" } });
+
+  degrees.forEach((d, i) => {
+    const colX = padL + i * colW;
+    const cx = colX + colW / 2;
+    const showLabel = degrees.length <= 24 || i % Math.ceil(degrees.length / 24) === 0;
+    if (showLabel) {
+      const label = svgEl("text", { x: cx, y: padT + plotH + 16, "text-anchor": "middle", "font-size": 9, fill: cMuted, "font-family": "var(--font-mono)" });
+      label.textContent = d;
+      svg.appendChild(label);
+    }
+
+    const pairs = [["dayahead", da[d], cDayahead, -1], ["live", li[d], cLive, 0]];
+    const barW = (colW - 8) / 2;
+    for (const [kind, p, color, side] of pairs) {
+      if (p === undefined || p === null) continue;
+      const barH = Math.max(0, (p / yMax) * plotH);
+      const bx = cx + side * (barW + 1);
+      const by = padT + plotH - barH;
+      const rect = svgEl("rect", {
+        x: bx, y: by, width: barW, height: Math.max(barH, 0.5), rx: 2, fill: color, class: "bar-rect",
+        tabindex: "0", role: "img",
+        "aria-label": `${d} degrees, ${kind === "dayahead" ? "day-ahead" : "live"}, ${(p * 100).toFixed(1)} percent`,
+      });
+      const show = (evt) => {
+        tooltip.textContent = "";
+        tooltip.appendChild(el("div", { class: "dt-deg", text: `${d}°F` }));
+        const rowDa = el("div", { class: "dt-row" });
+        rowDa.appendChild(el("span", { class: "dt-key", attrs: { style: `background:${cDayahead}` } }));
+        rowDa.appendChild(el("span", { text: `day-ahead: ${fmtPct(da[d] ?? null)}` }));
+        const rowLi = el("div", { class: "dt-row" });
+        rowLi.appendChild(el("span", { class: "dt-key", attrs: { style: `background:${cLive}` } }));
+        rowLi.appendChild(el("span", { text: `live: ${fmtPct(li[d] ?? null)}` }));
+        tooltip.appendChild(rowDa);
+        tooltip.appendChild(rowLi);
+        tooltip.classList.add("show");
+        const shellRect = shell.getBoundingClientRect();
+        const pt = evt.type.startsWith("focus")
+          ? rect.getBoundingClientRect()
+          : evt;
+        const left = (pt.left !== undefined ? pt.left + (pt.width || 0) / 2 : pt.clientX) - shellRect.left + scroller.scrollLeft;
+        const top = (pt.top !== undefined ? pt.top : pt.clientY) - shellRect.top;
+        tooltip.style.left = `${left}px`;
+        tooltip.style.top = `${top - 8}px`;
+      };
+      const hide = () => tooltip.classList.remove("show");
+      rect.addEventListener("mouseenter", show);
+      rect.addEventListener("mousemove", show);
+      rect.addEventListener("mouseleave", hide);
+      rect.addEventListener("focus", show);
+      rect.addEventListener("blur", hide);
+      svg.appendChild(rect);
+    }
+  });
+
+  if (today.running_max) {
+    const rmX = padL + (degrees.indexOf(Math.floor(today.running_max.hi)) >= 0
+      ? (degrees.indexOf(Math.floor(today.running_max.hi)) + 0.5) * colW
+      : (today.running_max.hi < degrees[0] ? 0 : plotW));
+    const marker = svgEl("line", { x1: rmX, x2: rmX, y1: padT, y2: padT + plotH, stroke: cMuted, "stroke-width": 1.5, "stroke-dasharray": "3,3" });
+    svg.appendChild(marker);
+    const mlabel = svgEl("text", { x: rmX, y: padT - 3, "text-anchor": "middle", "font-size": 9, fill: cMuted, "font-family": "var(--font-mono)" });
+    mlabel.textContent = "running max";
+    svg.appendChild(mlabel);
+  }
+
+  shell.appendChild(svg);
+  shell.appendChild(tooltip);
+  scroller.appendChild(shell);
+  host.appendChild(scroller);
+
+  // ── HOW CLOSE IS THE MEDIAN TO A ROUNDING LINE? ──────────────────────────
+  // The one number that explains a flip nobody asked for. Prefers the LIVE
+  // nowcast because that is what moves intraday; falls back to the day-ahead
+  // before the nowcast exists.
+  const src = today.intraday || today.dayahead;
+  const which = today.intraday ? "live" : "day-ahead";
+  const q = (src && src.quantiles) || {};
+  const p50 = (q["0.5"] !== undefined) ? q["0.5"] : (src && src.point);
+  const near = boundaryDistance(p50, today.kalshi_market);
+  if (near) {
+    const cap = el("p", { class: "ladder-note" });
+    if (near.outside) {
+      cap.appendChild(el("span", {
+        text: `${which} median ${p50.toFixed(2)}°F — ` }));
+      cap.appendChild(el("strong", {
+        text: `${near.dist.toFixed(2)}°F ${near.outside} the whole ladder` }));
+      cap.appendChild(el("span", {
+        text: ` (top rung ${near.label}) · the model and the market disagree about the RANGE, not the bucket` }));
+    } else {
+      cap.appendChild(el("span", {
+        text: `${which} median ${p50.toFixed(2)}°F · nearest ladder edge ${near.edge.toFixed(1)}°F · ` }));
+      cap.appendChild(el("strong", { text: `${near.dist.toFixed(2)}°F away` }));
+    }
+    // ⚠️ DESCRIPTIVE, NOT A GATE. Settlement rounds at the edge, so mass sitting
+    // near it can cross on refit noise and flip the favoured bucket while the
+    // forecast itself barely moves. Whether that predicts anything is measured
+    // and the answer is "not significantly": over 99 settled day-markets, days
+    // with no pre-commit flip hit 81% against 71% for days with any, Fisher
+    // p = 0.44 — and [Likely] that gradient is just restating `stated`.
+    if (!near.outside && near.dist <= 0.5) {
+      cap.appendChild(el("span", { class: "ladder-warn",
+        text: " — straddling: the favoured bucket can flip on noise alone" }));
+    }
+    host.appendChild(cap);
+  }
+
+  // ── ENSEMBLE SHAPE — how wide the question is, in RUNGS ──────────────────
+  // 119 members spanning 15F on a 2F ladder is eight buckets: no single-bucket
+  // bet can be confident whatever the model's probability says. That is
+  // arithmetic about the question, not a forecast of the answer.
+  // ⚠️ Measured NOT to predict outcomes (n=96 leak-free: ens_std +0.034
+  // CI [-0.168,+0.233], bimodality -0.038 CI [-0.237,+0.164]) — so it is shown
+  // in the same muted style as the ladder note and never as a warning.
+  const ens = today.ensemble;
+  if (ens && ens.span_f > 0) {
+    const e = el("p", { class: "ladder-note" });
+    e.appendChild(el("span", { text: `${ens.members} ensemble members span ` }));
+    e.appendChild(el("strong", {
+      text: `${ens.p10.toFixed(1)}–${ens.p90.toFixed(1)}°F` }));
+    e.appendChild(el("span", { text: ` (${ens.span_f.toFixed(1)}°F = ` }));
+    e.appendChild(el("strong", { text: `${ens.span_buckets} bucket${ens.span_buckets === 1 ? "" : "s"}` }));
+    e.appendChild(el("span", {
+      text: `) · bimodality ${Number(ens.bimodality).toFixed(2)}`
+            + ` · run ${ens.run_date} · display only, measured not to predict outcomes` }));
+    host.appendChild(e);
+  }
+
+  const details = el("details", {});
+  const summary = el("summary", { text: "View as table" });
+  details.appendChild(summary);
+  const table = el("table", { class: "data-table micro" });
+  const thead = el("thead", {});
+  const hr = el("tr", {});
+  ["Degree", "Day-ahead", "Live"].forEach(t => hr.appendChild(el("th", { text: t })));
+  thead.appendChild(hr);
+  table.appendChild(thead);
+  const tbody = el("tbody", {});
+  degrees.forEach(d => {
+    const tr = el("tr", {});
+    tr.appendChild(el("td", { class: "mono", text: String(d) }));
+    tr.appendChild(el("td", { class: "mono", text: fmtPct(da[d] ?? null) }));
+    tr.appendChild(el("td", { class: "mono", text: fmtPct(li[d] ?? null) }));
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  details.appendChild(table);
+  host.appendChild(details);
+}
+
+/* ---------------- clock table ---------------- */
+
+function renderClock(events) {
+  const tbody = document.querySelector("#clock-table tbody");
+  tbody.textContent = "";
+  for (const e of events) {
+    const tr = el("tr", { class: e.done ? "done" : "" });
+    tr.appendChild(el("td", { text: e.name }));
+    tr.appendChild(el("td", { class: "mono la", text: e.la }));
+    tr.appendChild(el("td", { class: "mono manila", text: e.manila }));
+    tbody.appendChild(tr);
+  }
+}
+
+/* ---------------- history strip ---------------- */
+
+function renderHistory(history) {
+  const host = document.getElementById("history-strip");
+  host.textContent = "";
+
+  const stat = el("div", { class: "history-stat" });
+  stat.appendChild(el("span", { class: "hv", text: history.mae !== null ? history.mae.toFixed(2) + "°F" : "—" }));
+  stat.appendChild(el("span", { class: "hl", text: "60-day day-ahead MAE" }));
+  host.appendChild(stat);
+
+  const days = [...history.days].reverse();
+  if (!days.length) {
+    host.appendChild(el("p", { class: "dist-empty", text: "No settled days yet." }));
+    return;
+  }
+
+  const css = getComputedStyle(document.documentElement);
+  const cInk2 = css.getPropertyValue("--ink-2").trim();
+  const cDayahead = css.getPropertyValue("--dayahead").trim();
+  const cGrid = css.getPropertyValue("--border").trim();
+
+  const w = 620, h = 90, padX = 6, padY = 10;
+  const vals = days.flatMap(d => [d.actual, d.predicted]).filter(v => v !== null && v !== undefined);
+  const vMin = Math.min(...vals) - 1, vMax = Math.max(...vals) + 1;
+  const xStep = days.length > 1 ? (w - padX * 2) / (days.length - 1) : 0;
+  const yOf = (v) => padY + (h - padY * 2) * (1 - (v - vMin) / (vMax - vMin || 1));
+
+  const svg = svgEl("svg", { viewBox: `0 0 ${w} ${h}`, width: "100%", height: h, role: "img",
+    "aria-label": "Sparkline of actual versus predicted high, last 60 days" });
+  svg.appendChild(svgEl("line", { x1: padX, x2: w - padX, y1: h - padY, y2: h - padY, stroke: cGrid, "stroke-width": 1 }));
+
+  function pathFor(key) {
+    let d = "";
+    days.forEach((day, i) => {
+      const v = day[key];
+      if (v === null || v === undefined) return;
+      const x = padX + i * xStep, y = yOf(v);
+      d += (d ? "L" : "M") + x.toFixed(1) + "," + y.toFixed(1) + " ";
+    });
+    return d.trim();
+  }
+
+  const actualPath = svgEl("path", { d: pathFor("actual"), fill: "none", stroke: cInk2, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" });
+  const predPath = svgEl("path", { d: pathFor("predicted"), fill: "none", stroke: cDayahead, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" });
+  svg.appendChild(actualPath);
+  svg.appendChild(predPath);
+
+  const shell = el("div", { class: "history-svg-shell" });
+  const tooltip = el("div", { class: "dist-tooltip", attrs: { role: "status" } });
+
+  days.forEach((day, i) => {
+    const x = padX + i * xStep;
+    const hit = svgEl("rect", { x: x - xStep / 2, y: 0, width: Math.max(xStep, 6), height: h, fill: "transparent", tabindex: "0", role: "img",
+      "aria-label": `${day.date}: actual ${fmtF(day.actual, 0)}${day.predicted !== null ? ", predicted " + fmtF(day.predicted) : ""}` });
+    const show = (evt) => {
+      tooltip.textContent = "";
+      tooltip.appendChild(el("div", { class: "dt-deg", text: day.date }));
+      const rowA = el("div", { class: "dt-row" });
+      rowA.appendChild(el("span", { class: "dt-key", attrs: { style: `background:${cInk2}` } }));
+      rowA.appendChild(el("span", { text: `actual: ${fmtF(day.actual, 0)}` }));
+      tooltip.appendChild(rowA);
+      if (day.predicted !== null && day.predicted !== undefined) {
+        const rowP = el("div", { class: "dt-row" });
+        rowP.appendChild(el("span", { class: "dt-key", attrs: { style: `background:${cDayahead}` } }));
+        rowP.appendChild(el("span", { text: `predicted: ${fmtF(day.predicted)}` }));
+        tooltip.appendChild(rowP);
+      }
+      tooltip.classList.add("show");
+      const shellRect = shell.getBoundingClientRect();
+      const scaleX = shellRect.width / w;
+      tooltip.style.left = `${x * scaleX}px`;
+      tooltip.style.top = `${yOf(day.actual ?? vMin) - 8}px`;
+    };
+    const hide = () => tooltip.classList.remove("show");
+    hit.addEventListener("mouseenter", show);
+    hit.addEventListener("mousemove", show);
+    hit.addEventListener("mouseleave", hide);
+    hit.addEventListener("focus", show);
+    hit.addEventListener("blur", hide);
+    svg.appendChild(hit);
+  });
+
+  shell.appendChild(svg);
+  shell.appendChild(tooltip);
+  host.appendChild(shell);
+
+  const legend = el("div", { class: "legend-inline" });
+  const l1 = el("span", { class: "legend-chip" });
+  l1.appendChild(el("i", { class: "swatch", attrs: { style: `background:${cInk2}` } }));
+  l1.appendChild(document.createTextNode("Actual"));
+  const l2 = el("span", { class: "legend-chip" });
+  l2.appendChild(el("i", { class: "swatch swatch-dayahead" }));
+  l2.appendChild(document.createTextNode("Predicted (day-ahead)"));
+  legend.appendChild(l1);
+  legend.appendChild(l2);
+  host.appendChild(legend);
+}
+
+/* ---------------- track record ---------------- */
+
+const TRACK_KIND_LABEL = { intraday: "Live", dayahead: "Day-ahead", overall: "Overall" };
+
+function renderScorecard(data) {
+  const host = document.getElementById("track-record");
+  host.textContent = "";
+
+  const records = data.records || [];
+  const summary = data.summary || {};
+
+  if (!records.length) {
+    host.appendChild(el("p", { class: "dist-empty", text: "No settled predictions yet." }));
+    return;
+  }
+
+  const summaryRow = el("div", { class: "track-summary" });
+  for (const kind of ["intraday", "dayahead", "overall"]) {
+    const s = summary[kind];
+    if (!s) continue;
+    const stat = el("div", { class: `track-stat is-${kind}` });
+    stat.appendChild(el("span", { class: "ts-kind", text: TRACK_KIND_LABEL[kind] }));
+    stat.appendChild(el("span", { class: "ts-vals", text: `${fmtPct(s.bucket_hit_rate)} bucket · ${fmtPct(s.tail_hit_rate)} tail` }));
+    stat.appendChild(el("span", { class: "ts-sub", text: `${s.mae !== null ? s.mae.toFixed(2) + "°F MAE" : "—"} · n=${s.n}` }));
+    summaryRow.appendChild(stat);
+  }
+  host.appendChild(summaryRow);
+
+  const overallN = summary.overall ? summary.overall.n : records.length;
+  if (overallN < 10) {
+    host.appendChild(el("p", { class: "disclaimer",
+      text: `small sample (n=${overallN}) — rates will firm up as days settle` }));
+  }
+
+  const wrap = el("div", { class: "table-scroll" });
+  const table = el("table", { class: "data-table" });
+  const thead = el("thead");
+  const headRow = el("tr");
+  ["Date", "Kind", "Pick", "Hit", "Tail", "Tail hit", "Actual", "Error"].forEach(h => headRow.appendChild(el("th", { text: h })));
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+
+  const tbody = el("tbody");
+  const sorted = [...records].sort((a, b) => b.target_date.localeCompare(a.target_date) || a.kind.localeCompare(b.kind));
+  for (const r of sorted) {
+    const tr = el("tr");
+    tr.appendChild(el("td", { class: "mono", text: r.target_date }));
+    const kindTd = el("td", { text: r.kind === "intraday" ? "Live" : "Day-ahead" });
+    kindTd.style.color = r.kind === "intraday" ? "var(--live)" : "var(--dayahead)";
+    tr.appendChild(kindTd);
+    tr.appendChild(el("td", { class: "mono", text: r.pick_label !== null && r.pick_label !== undefined ? `${r.pick_label}°F` : "—" }));
+    const hitTd = el("td", { class: `track-hit ${r.bucket_hit ? "is-good" : "is-danger"}`, text: r.bucket_hit ? "✓" : "✗" });
+    tr.appendChild(hitTd);
+    tr.appendChild(el("td", { class: "mono", text: r.tail_label !== null && r.tail_label !== undefined ? `${r.tail_label}°F` : "—" }));
+    const tailHitTd = el("td", { class: `track-hit ${r.tail_hit ? "is-good" : "is-danger"}`, text: r.tail_hit ? "✓" : "✗" });
+    tr.appendChild(tailHitTd);
+    tr.appendChild(el("td", { class: "mono", text: r.actual !== null && r.actual !== undefined ? `${r.actual}°F` : "—" }));
+    tr.appendChild(el("td", { class: "mono", text: r.abs_error !== null && r.abs_error !== undefined ? `±${r.abs_error.toFixed(2)}°F` : "—" }));
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  host.appendChild(wrap);
+}
+
+/* ---------------- field notes ---------------- */
+
+const NOTE_PLACEHOLDERS = [
+  "Marine layer never cleared — grey till 3pm",
+  "Burned off by 9am, full sun",
+  "Santa Ana, hot and dry",
+  "High clouds lingered past noon",
+  "Fog didn't burn off until 1pm",
+];
+let noteDateTouched = false;
+
+function relTimeFromIso(iso) {
+  if (!iso) return "—";
+  const mins = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
+function noteSummary(note) {
+  const ctx = note.context || {};
+  const pick = ctx.dayahead || ctx.intraday;
+  const pickTxt = (pick && pick.pick_label) ? `picked ${pick.pick_label}°F` : "no pick yet";
+  const settleTxt = (note.actual_high === null || note.actual_high === undefined)
+    ? "pending" : `settled ${note.actual_high}°F`;
+  return `${pickTxt} · ${settleTxt}`;
+}
+
+function renderNotesList(notes) {
+  const host = document.getElementById("notes-list");
+  if (!host) return;
+  host.textContent = "";
+  if (!notes.length) {
+    host.appendChild(el("p", { class: "dist-empty", text: "No field notes yet." }));
+    return;
+  }
+  for (const note of notes) {
+    const entry = el("div", { class: "note-entry" });
+    const head = el("div", { class: "note-entry-head" });
+    head.appendChild(el("span", { class: "note-entry-date mono", text: note.target_date }));
+    head.appendChild(el("span", { class: "note-entry-summary", text: noteSummary(note) }));
+    head.appendChild(el("span", { class: "note-entry-age", text: relTimeFromIso(note.created_utc) }));
+    entry.appendChild(head);
+    entry.appendChild(el("p", { class: "note-entry-sky", text: note.sky }));
+    host.appendChild(entry);
+  }
+}
+
+async function refreshNotes() {
+  try {
+    renderNotesList(await j("/api/notes"));
+  } catch (err) { /* non-critical; leave the previous list visible */ }
+}
+
+function setDefaultNoteDate(isoDate) {
+  const dateInput = document.getElementById("note-date");
+  if (dateInput && !noteDateTouched && !dateInput.value) dateInput.value = isoDate;
+}
+
+function initNoteForm() {
+  const form = document.getElementById("note-form");
+  const dateInput = document.getElementById("note-date");
+  const textarea = document.getElementById("note-sky");
+  const submit = document.getElementById("note-submit");
+  const status = document.getElementById("note-status");
+  if (!form) return;
+
+  let placeholderIdx = 0;
+  textarea.placeholder = NOTE_PLACEHOLDERS[0];
+  setInterval(() => {
+    placeholderIdx = (placeholderIdx + 1) % NOTE_PLACEHOLDERS.length;
+    textarea.placeholder = NOTE_PLACEHOLDERS[placeholderIdx];
+  }, 4000);
+
+  dateInput.addEventListener("input", () => { noteDateTouched = true; });
+
+  const updateSubmitState = () => { submit.disabled = textarea.value.trim().length === 0; };
+  textarea.addEventListener("input", updateSubmitState);
+  updateSubmitState();
+
+  form.addEventListener("submit", async (evt) => {
+    evt.preventDefault();
+    const sky = textarea.value.trim();
+    if (!sky) return;
+    submit.disabled = true;
+    status.className = "note-status";
+    status.textContent = "Saving…";
+    try {
+      const r = await fetch("/api/note", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target_date: dateInput.value, sky }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        status.className = "note-status is-error";
+        status.textContent = body.detail || "Could not save note.";
+        submit.disabled = false;
+        return;
+      }
+      textarea.value = "";
+      status.className = "note-status is-ok";
+      status.textContent = "Saved.";
+      updateSubmitState();
+      refreshNotes();
+    } catch (err) {
+      status.className = "note-status is-error";
+      status.textContent = "Could not save note — check connection.";
+      submit.disabled = false;
+    }
+  });
+}
+
+/* ---------------- update indicator ---------------- */
+
+function tickIndicator() {
+  const ind = document.getElementById("update-indicator");
+  if (!state.lastFetch) { ind.textContent = "—"; return; }
+  const secs = Math.round((Date.now() - state.lastFetch) / 1000);
+  ind.textContent = secs < 5 ? "updated just now" : `updated ${secs}s ago`;
+}
+
+/* ---------------- fetch orchestration ---------------- */
+
+function gateRow(gstate, label, val) {
+  const mark = gstate === "pass" ? "✓" : gstate === "fail" ? "✕" : gstate === "info" ? "·" : "–";
+  const li = el("li", { class: `gate-row ${gstate}` }, [
+    el("span", { class: "gate-mark", text: mark }),
+    el("span", { class: "gate-label", text: label }),
+  ]);
+  if (val != null) li.appendChild(el("span", { class: "gate-val", text: val }));
+  return li;
+}
+
+function renderDecision(bet) {
+  document.getElementById("decision-metric").textContent = `· ${bet.metric.toUpperCase()}`;
+  document.getElementById("decision-target").textContent = bet.target ? `Target · ${bet.target}` : "";
+  const stamp = document.getElementById("decision-stamp");
+  const reason = document.getElementById("decision-reason");
+  const sizeEl = document.getElementById("decision-size");
+  const gatesEl = document.getElementById("decision-gates");
+  gatesEl.textContent = ""; sizeEl.hidden = true;
+  if (!bet.has_pred) {
+    stamp.textContent = "WAIT"; stamp.className = "decision-stamp wait";
+    reason.textContent = `No ${bet.metric} prediction stored for today yet.`;
+    return;
+  }
+  const g = bet.gate || {}, d = bet.decision;
+  const place = !!(d && d.place);
+  stamp.textContent = place ? "PLACE" : "HOLD";
+  stamp.className = "decision-stamp " + (place ? "place" : "hold");
+  reason.textContent = d ? d.reason : "…";
+  if (place && d.stake != null && !d.bankroll_unset) {
+    sizeEl.hidden = false;
+    document.getElementById("decision-stake").textContent = `${bet.currency} ${d.stake.toFixed(2)}`;
+    document.getElementById("decision-stake-sub").textContent =
+      `${(d.stake_frac * 100).toFixed(1)}% of bankroll · ~${d.contracts} contracts${d.capped ? " · capped" : ""}`;
+  } else if (place && d.bankroll_unset) {
+    sizeEl.hidden = false;
+    document.getElementById("decision-stake").textContent = "set bankroll";
+    document.getElementById("decision-stake-sub").textContent = "config: staking.bankroll = 0";
+  }
+  // Confidence + stability are CONTEXT now (edge-based betting doesn't gate on
+  // them — Kelly sizing handles uncertainty). The blockers are window/edge/liquidity.
+  gatesEl.appendChild(gateRow("info", "Confidence (context)",
+    g.prob == null ? "no reads" : `${Math.round(g.prob * 100)}%`));
+  gatesEl.appendChild(gateRow("info", "Stability (context)", `${g.n_readings || 0} reads`));
+  gatesEl.appendChild(gateRow(g.within_window ? "pass" : "fail", "Trading window",
+    g.within_window ? `open · ${g.cutoff_manila || ""}` : "closed"));
+  // MEASURED accuracy of this read at the hour its model was fitted for. The
+  // nowcast refits every hour, so an early pick is a different model from a late
+  // one and moves between them — this row is what stops the two looking alike.
+  // Source: gating.HOUR_ACCURACY via scripts/hour_curve.py.
+  const ha = bet.hour_accuracy;
+  if (ha) {
+    gatesEl.appendChild(gateRow(ha.ready ? "pass" : "fail",
+      `Hour accuracy (from ${bet.decision_hour}:00 local)`,
+      `${Math.round(ha.hit * 100)}% at ${ha.hour}:00`));
+  }
+  let es = "na", ev = "no market";
+  if (d && d.edge != null) { es = d.edge >= bet.min_edge ? "pass" : "fail"; ev = `${d.edge >= 0 ? "+" : ""}${Math.round(d.edge * 100)}%`; }
+  gatesEl.appendChild(gateRow(es, `Edge vs market (≥${Math.round(bet.min_edge * 100)}%)`, ev));
+  const maxSp = bet.max_spread != null ? bet.max_spread : 0.10;
+  let ls = "na", lv = "no book";
+  if (d && d.spread != null) { ls = d.spread <= maxSp ? "pass" : "fail"; lv = `${Math.round(d.spread * 100)}¢`; }
+  gatesEl.appendChild(gateRow(ls, `Liquidity (spread ≤${Math.round(maxSp * 100)}¢)`, lv));
+}
+
+function pnlStat(label, val, cls) {
+  return el("div", { class: "pnl-stat" }, [
+    el("span", { class: "eyebrow", text: label }),
+    el("span", { class: `pnl-num ${cls || ""}`, text: val }),
+  ]);
+}
+
+/* ── DEMO ACCOUNT ──────────────────────────────────────────────────────────
+   ONE account, TWO lenses that must never be added together:
+
+     daily_plan  — what the real balance could actually have bought: one
+                   market a day, compounding stake, price ceiling, min-edge,
+                   and the above-cap override.
+     unit_replay — a hit-rate instrument: exactly 1 contract per bet over the
+                   whole archive, so no single lucky size dominates the curve.
+
+   The lens switch swaps EVERY number in the panel at once (balance, delta,
+   curve, stats, ledger) precisely so no half-and-half reading can appear on
+   screen. See highcast/paper_account.py's module docstring. */
+const DEMO_LENS_NOTE = {
+  daily_plan: "What this balance could actually have bought: one market a day, "
+    + "stake compounding off the running balance, price ceiling and min-edge still "
+    + "enforced. Rows marked ABOVE CAP bought one contract that exceeded the stake "
+    + "cap — the cap itself was never raised.",
+  unit_replay: "A hit-rate instrument, not a claim about what would have been "
+    + "bought: exactly one contract per bet across every market in the archive, so "
+    + "no single lucky size dominates the curve.",
+};
+
+function demoMoney(x, digits = 2) {
+  return (x === null || x === undefined) ? "—"
+    : `${x < 0 ? "−" : ""}$${Math.abs(x).toFixed(digits)}`;
+}
+
+function demoCurve(curve) {
+  // Balance over time. Decorative-adjacent: every figure it encodes is also
+  // printed as text above it, so it carries an aria-label summary rather than
+  // trying to be a screen-reader table.
+  const pts = (curve || []).map(p => p.balance).filter(v => typeof v === "number");
+  if (pts.length < 2) return null;
+  const W = 300, H = 64, PAD = 3;
+  const lo = Math.min(...pts), hi = Math.max(...pts);
+  const span = (hi - lo) || 1;
+  const x = i => PAD + (i * (W - 2 * PAD)) / (pts.length - 1);
+  const y = v => PAD + (H - 2 * PAD) * (1 - (v - lo) / span);
+  const line = pts.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+  const up = pts[pts.length - 1] >= pts[0];
+  const stroke = up ? "var(--good)" : "var(--danger)";
+  const svg = svgEl("svg", {
+    viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", role: "img",
+    "aria-label": `Balance curve: ${demoMoney(pts[0])} to ${demoMoney(pts[pts.length - 1])}`
+      + `, low ${demoMoney(lo)}, high ${demoMoney(hi)}, over ${pts.length} points.`,
+  });
+  svg.appendChild(svgEl("path", {
+    d: `${line} L${x(pts.length - 1).toFixed(1)},${H - PAD} L${PAD},${H - PAD} Z`,
+    fill: stroke, "fill-opacity": ".10", stroke: "none" }));
+  svg.appendChild(svgEl("path", {
+    d: line, fill: "none", stroke, "stroke-width": "1.6",
+    "stroke-linejoin": "round", "stroke-linecap": "round" }));
+  svg.appendChild(svgEl("circle", {
+    cx: x(pts.length - 1).toFixed(1), cy: y(pts[pts.length - 1]).toFixed(1),
+    r: "2.6", fill: stroke }));
+  return svg;
+}
+
+function demoStats(lens, d) {
+  const wrap = el("div", { class: "pnl-stats" });
+  const dd = d.max_drawdown_usd;
+  if (lens === "daily_plan") {
+    wrap.appendChild(pnlStat("Bets seen", String(d.n_bets_seen ?? 0)));
+    wrap.appendChild(pnlStat("Traded", String(d.n_trades ?? 0)));
+    wrap.appendChild(pnlStat("Stood down", String(d.n_no_trade ?? 0)));
+    wrap.appendChild(pnlStat("Above cap", String(d.n_overrides ?? 0),
+      (d.n_overrides ?? 0) > 0 ? "neg" : ""));
+    wrap.appendChild(pnlStat("Won / lost",
+      `${d.wins_traded ?? 0} / ${d.losses_traded ?? 0}`));
+  } else {
+    wrap.appendChild(pnlStat("Graded", String(d.n_graded ?? 0)));
+    wrap.appendChild(pnlStat("Won / lost", `${d.wins ?? 0} / ${d.losses ?? 0}`));
+    wrap.appendChild(pnlStat("Win rate",
+      d.win_rate == null ? "—" : `${Math.round(d.win_rate * 100)}%`));
+    const rec = d.reconciliation || {};
+    if (rec.place) wrap.appendChild(pnlStat("PLACE net / ctr",
+      demoMoney(rec.place.net_per_contract, 3),
+      rec.place.net_per_contract >= 0 ? "pos" : "neg"));
+    if (rec.skip) wrap.appendChild(pnlStat("SKIP net / ctr",
+      demoMoney(rec.skip.net_per_contract, 3),
+      rec.skip.net_per_contract >= 0 ? "pos" : "neg"));
+  }
+  if (dd != null) wrap.appendChild(pnlStat("Max drawdown", demoMoney(-dd),
+    dd > 0 ? "neg" : ""));
+  return wrap;
+}
+
+function demoStage(d) {
+  const box = document.getElementById("demo-stage");
+  const stage = d.current_stage;
+  if (!stage) { box.hidden = true; return; }
+  box.hidden = false;
+  box.textContent = "";
+  const bal = d.closing_balance ?? 0;
+  const lo = stage.lo ?? 0, hi = stage.hi;
+  const pct = hi ? Math.max(0, Math.min(1, (bal - lo) / (hi - lo))) : 1;
+  const top = el("div", { class: "demo-stage-top" }, [
+    el("span", { class: "demo-stage-name", text: `STAGE ${stage.stage}` }),
+    el("span", { class: "demo-stage-range",
+      text: hi ? `${demoMoney(lo)} → ${demoMoney(hi)}` : `${demoMoney(lo)} and up` }),
+  ]);
+  const bar = el("div", { class: "demo-stage-bar",
+    attrs: { role: "progressbar", "aria-valuemin": String(lo),
+             "aria-valuemax": String(hi ?? bal), "aria-valuenow": String(bal),
+             "aria-label": `Balance within stage ${stage.stage}` } },
+    [el("div", { class: "demo-stage-fill" })]);
+  bar.firstChild.style.width = `${(pct * 100).toFixed(1)}%`;
+  box.appendChild(top);
+  box.appendChild(bar);
+  box.appendChild(el("p", { class: "demo-stage-note",
+    text: hi ? `${stage.note}. Next stage unlocks at ${demoMoney(hi)}.` : stage.note }));
+}
+
+const DEMO_LEDGER_ROWS = 24;
+
+function demoLedger(txns) {
+  const box = document.getElementById("demo-ledger");
+  const count = document.getElementById("demo-count");
+  box.textContent = "";
+  count.textContent = "";
+  const all = txns || [];
+  if (!all.length) {
+    box.appendChild(el("p", { class: "dist-empty",
+      text: "No bets in this lens yet — the app commits one per market per decision hour." }));
+    return;
+  }
+  const rows = all.slice(-DEMO_LEDGER_ROWS);
+  const head = el("tr", {}, ["Date", "Market", "Type", "Bucket", "Price", "Ctr",
+                             "Cash", "Balance", "Why"]
+    .map(h => el("th", { text: h, attrs: { scope: "col" } })));
+  const body = el("tbody");
+  for (const t of rows) {
+    const isNo = t.txn_type === "NO_TRADE";
+    const tr = el("tr", { class: isNo ? "is-notrade" : "" });
+    tr.appendChild(el("td", { text: t.target_date || "—" }));
+    tr.appendChild(el("td", { text: `${t.station} ${String(t.metric).toUpperCase()}` }));
+    let chip = "";
+    if (t.txn_type === "SETTLE") chip = t.won ? "win" : "loss";
+    else if (t.txn_type === "OPEN") chip = "open";
+    tr.appendChild(el("td", {}, [el("span",
+      { class: `demo-chip ${chip}`, text: t.txn_type })]));
+    tr.appendChild(el("td", { text: t.bucket || "—" }));
+    tr.appendChild(el("td", { class: "num",
+      text: t.price == null ? "—" : `${Math.round(t.price * 100)}¢` }));
+    tr.appendChild(el("td", { class: "num", text: String(t.contracts ?? 0) }));
+    const cash = t.cash_delta ?? 0;
+    tr.appendChild(el("td", {
+      class: `num cash ${cash > 0 ? "pos" : cash < 0 ? "neg" : ""}`,
+      text: cash === 0 ? "—" : `${cash > 0 ? "+" : "−"}$${Math.abs(cash).toFixed(2)}` }));
+    tr.appendChild(el("td", { class: "num", text: demoMoney(t.balance_after) }));
+    const why = el("td", { class: "why" });
+    // The above-cap override is the one thing in this ledger a reader must not
+    // skim past, so it gets a chip of its own rather than living in prose.
+    // The literal reason text is e.g. "... = 76.3% of bankroll — ABOVE the 5%
+    // cap, accepted at stage 1", so match around the percentage.
+    if (t.reason && /ABOVE the [^,]*cap/i.test(t.reason))
+      why.appendChild(el("span", { class: "demo-chip cap", text: "ABOVE CAP" }));
+    why.appendChild(el("span", { text: (why.childNodes.length ? " " : "") + (t.reason || "") }));
+    tr.appendChild(why);
+    body.appendChild(tr);
+  }
+  const table = el("table", {}, [el("thead", {}, [head]), body]);
+  box.appendChild(el("div", { class: "demo-scroll" }, [table]));
+  if (all.length > rows.length)
+    count.textContent = `Showing the last ${rows.length} of ${all.length} ledger rows.`;
+}
+
+function demoVariants(v) {
+  const box = document.getElementById("demo-variants-body");
+  if (!box) return;
+  box.textContent = "";
+  const rows = (v && v.variants) || [];
+  if (!rows.length) {
+    box.appendChild(el("p", { class: "demo-count",
+      text: (v && v.note) || "No commit-hour comparison available." }));
+    return;
+  }
+  box.appendChild(el("p", { class: "demo-count",
+    text: `${v.station} ${String(v.metric).toUpperCase()} at each candidate hour, `
+        + `graded at 1 contract on matched data. Compare mean net per bet — a `
+        + `variant with fewer graded days must not win on total alone. This `
+        + `changes nothing that gets traded.` }));
+  const head = el("tr", {}, ["Hour", "Bets", "Graded", "Won", "Mean entry",
+                             "Net / bet"]
+    .map(h => el("th", { text: h, attrs: { scope: "col" } })));
+  const body = el("tbody");
+  for (const r of rows) {
+    const tr = el("tr");
+    tr.appendChild(el("td", {
+      text: `${String(r.hour).padStart(2, "0")}:00${r.is_default ? " · shipped" : ""}` }));
+    tr.appendChild(el("td", { class: "num", text: String(r.n) }));
+    tr.appendChild(el("td", { class: "num", text: String(r.n_graded) }));
+    tr.appendChild(el("td", { class: "num",
+      text: `${r.wins}${r.win_rate == null ? "" : ` (${Math.round(r.win_rate * 100)}%)`}` }));
+    tr.appendChild(el("td", { class: "num",
+      text: r.mean_entry_price == null ? "—" : `${Math.round(r.mean_entry_price * 100)}¢` }));
+    const net = r.mean_net_per_bet;
+    tr.appendChild(el("td", {
+      class: `num cash ${net > 0 ? "pos" : net < 0 ? "neg" : ""}`,
+      text: net == null ? "—" : demoMoney(net, 3) }));
+    body.appendChild(tr);
+  }
+  const wrap = el("div", { class: "demo-ledger" }, [
+    el("div", { class: "demo-scroll" }, [
+      el("table", {}, [el("thead", {}, [head]), body])])]);
+  box.appendChild(wrap);
+}
+
+const ARM_LABEL = {
+  confidence_only: "A · confidence only",
+  confidence_x_return: "B · confidence × return",
+  control: "C · control (shipped)",
+};
+const ARM_NOTE = {
+  confidence_only: "Confident ⇒ commit the aggressive fraction, cap or no cap.",
+  confidence_x_return: "Same, but refuses a bucket whose win pays too little.",
+  control: "Quarter-Kelly + the 5% cap, exactly as shipped.",
+};
+
+function demoArms(s) {
+  const box = document.getElementById("demo-arms-body");
+  if (!box) return;
+  box.textContent = "";
+  const arms = (s && s.arms) || [];
+  if (!arms.length) {
+    box.appendChild(el("p", { class: "demo-count",
+      text: (s && s.note) || "No sizing comparison available." }));
+    return;
+  }
+  box.appendChild(el("p", { class: "demo-count",
+    text: `${s.market.station} ${String(s.market.metric).toUpperCase()}, every arm `
+        + `scored on the SAME days — an arm that stands down records a no-trade `
+        + `rather than dropping the day. "Confident" is ${Math.round(s.confidence_threshold * 100)}%; `
+        + `arm A commits ${Math.round(s.aggressive_frac * 100)}% of the balance. `
+        + `Equity counts an open bet at cost, so an arm holding a live position `
+        + `is not shown as having lost it. Paper only.` }));
+  const head = el("tr", {}, ["Arm", "Equity", "Net settled", "Net / ctr",
+                             "Trades", "Won", "Biggest stake", "Ruin"]
+    .map(h => el("th", { text: h, attrs: { scope: "col" } })));
+  const body = el("tbody");
+  for (const a of arms) {
+    const tr = el("tr", { class: a.ruin_date ? "is-notrade" : "" });
+    tr.appendChild(el("td", { text: ARM_LABEL[a.arm] || a.arm,
+                              attrs: { title: ARM_NOTE[a.arm] || "" } }));
+    tr.appendChild(el("td", { class: "num", text: demoMoney(a.equity_at_cost) }));
+    const n = a.net_settled;
+    tr.appendChild(el("td", { class: `num cash ${n > 0 ? "pos" : n < 0 ? "neg" : ""}`,
+      text: `${n >= 0 ? "+" : "−"}$${Math.abs(n).toFixed(2)}` }));
+    tr.appendChild(el("td", { class: "num",
+      text: a.net_per_contract == null ? "—" : demoMoney(a.net_per_contract, 3) }));
+    tr.appendChild(el("td", { class: "num", text: String(a.n_trades) }));
+    tr.appendChild(el("td", { class: "num", text: `${a.wins} / ${a.n_graded}` }));
+    // The stake share is the risk number, so it is the one cell allowed to
+    // shout: anything past the shipped cap reads as a warning, not a stat.
+    const big = a.max_stake_frac_seen;
+    tr.appendChild(el("td", { class: `num ${big > 0.2 ? "cash neg" : ""}`,
+      text: `${Math.round(big * 100)}%` }));
+    tr.appendChild(el("td", {}, [a.ruin_date
+      ? el("span", { class: "demo-chip loss", text: a.ruin_date })
+      : el("span", { text: "—" })]));
+    body.appendChild(tr);
+  }
+  box.appendChild(el("div", { class: "demo-ledger" }, [
+    el("div", { class: "demo-scroll" }, [
+      el("table", {}, [el("thead", {}, [head]), body])])]));
+}
+
+function renderDemoAccount(data) {
+  if (!data) return;
+  state.demo = data;
+  const lens = state.demoLens || "daily_plan";
+  const d = data[lens] || {};
+  const seed = data.seed || {};
+
+  const badge = document.getElementById("demo-seed-badge");
+  const live = seed.source === "kalshi_balance";
+  badge.textContent = live ? "SEEDED FROM KALSHI" : "FALLBACK SEED";
+  badge.className = "source-badge" + (live ? " is-live" : "");
+  badge.title = seed.note || "";
+
+  const mk = document.getElementById("demo-market");
+  const market = (data.daily_plan || {}).market;
+  mk.textContent = lens === "daily_plan"
+    ? (market ? `· ${market.station} ${String(market.metric).toUpperCase()} @ ${String(market.hour).padStart(2, "0")}:00`
+              : "· no market selected")
+    : "· all markets, 1 contract each";
+
+  document.getElementById("demo-lens-note").textContent = DEMO_LENS_NOTE[lens];
+
+  const open = d.opening_balance, close = d.closing_balance;
+  document.getElementById("demo-balance").textContent = demoMoney(close);
+  const delta = document.getElementById("demo-delta");
+  if (open == null || close == null) {
+    delta.textContent = "—"; delta.className = "demo-delta";
+  } else {
+    const diff = close - open;
+    const pct = open ? (diff / open) * 100 : null;
+    delta.textContent = `${diff >= 0 ? "+" : "−"}$${Math.abs(diff).toFixed(2)}`
+      + `${pct == null ? "" : ` (${diff >= 0 ? "+" : "−"}${Math.abs(pct).toFixed(1)}%)`}`
+      + ` from ${demoMoney(open)} opening`;
+    delta.className = "demo-delta " + (diff > 0 ? "pos" : diff < 0 ? "neg" : "");
+  }
+
+  const curveBox = document.getElementById("demo-curve");
+  curveBox.textContent = "";
+  const svg = demoCurve(d.curve);
+  if (svg) curveBox.appendChild(svg);
+
+  if (lens === "daily_plan") demoStage(d);
+  else document.getElementById("demo-stage").hidden = true;
+
+  const stats = document.getElementById("demo-stats");
+  stats.replaceWith(Object.assign(demoStats(lens, d), { id: "demo-stats" }));
+  demoLedger(d.txns);
+  demoArms(data.sizing_arms);
+  demoVariants(data.commit_hour_variants);
+}
+
+/* ── TEST BENCH ────────────────────────────────────────────────────────────
+   Knobs are query parameters on a GET, and nothing else. There is no POST and
+   no server-side "current experiment": reloading the page returns the shipped
+   view, which is the behaviour you want when the alternative is a forgotten
+   tab quietly redefining what the desk looks like. The panel border and the
+   heading suffix turn amber whenever what you are reading is simulated. */
+const BENCH_FIELDS = [
+  ["bench-commit-hour", "commit_hour"],
+  ["bench-balance", "balance"],
+  ["bench-confidence", "confidence"],
+  ["bench-aggressive", "aggressive_frac"],
+  ["bench-min-payoff", "min_payoff"],
+  ["bench-min-edge", "min_edge"],
+  ["bench-max-stake", "max_stake_frac"],
+];
+
+function benchQuery() {
+  const qs = new URLSearchParams({ bench: "1" });
+  let n = 0;
+  for (const [id, param] of BENCH_FIELDS) {
+    const elm = document.getElementById(id);
+    if (!elm || elm.value === "" || elm.value == null) continue;
+    qs.set(param, elm.value);
+    n++;
+  }
+  return { qs, n };
+}
+
+function markBenchState(data) {
+  const panel = document.getElementById("demo-account");
+  const status = document.getElementById("bench-status");
+  const on = !!(data && data.bench && data.bench.is_bench);
+  if (panel) panel.classList.toggle("is-bench", on);
+  if (!status) return;
+  if (!on) { status.textContent = ""; status.className = "bench-status"; return; }
+  const b = data.bench;
+  const bits = [];
+  if (b.commit_hour != null && b.commit_hour !== b.shipped_commit_hour)
+    bits.push(`hour ${b.commit_hour} (shipped ${b.shipped_commit_hour})`);
+  for (const [, param] of BENCH_FIELDS) {
+    if (param === "commit_hour") continue;
+    if (b[param] != null) bits.push(`${param.replace(/_/g, " ")} ${b[param]}`);
+  }
+  status.className = "bench-status is-on";
+  status.textContent = "SIMULATED — " + (bits.join(" · ") || "shipped values");
+}
+
+async function runBench() {
+  const status = document.getElementById("bench-status");
+  const { qs, n } = benchQuery();
+  if (status) { status.className = "bench-status"; status.textContent = "Running…"; }
+  try {
+    const data = await j(`/api/demo-account?${qs.toString()}`);
+    renderDemoAccount(data);
+    markBenchState(data);
+    if (!n && status) status.textContent = "No knobs set — that IS the shipped view.";
+  } catch (err) {
+    if (status) {
+      status.className = "bench-status is-on";
+      // A 422 is the endpoint refusing an out-of-range knob, which is a
+      // correct answer, not a failure — say which way it went.
+      status.textContent = "Rejected — check the ranges (hour 0–23.5, "
+        + "fractions 0–1).";
+    }
+  }
+}
+
+function wireBench() {
+  const form = document.getElementById("bench-form");
+  const reset = document.getElementById("bench-reset");
+  if (!form) return;
+  form.addEventListener("submit", (e) => { e.preventDefault(); runBench(); });
+  if (reset) reset.addEventListener("click", async () => {
+    for (const [id] of BENCH_FIELDS) {
+      const elm = document.getElementById(id);
+      if (elm) elm.value = "";
+    }
+    const data = await j("/api/demo-account");
+    renderDemoAccount(data);
+    markBenchState(data);
+  });
+}
+
+function wireDemoLens() {
+  const btns = [document.getElementById("demo-lens-daily"),
+                document.getElementById("demo-lens-unit")];
+  if (btns.some(b => !b)) return;
+  const select = (i) => {
+    btns.forEach((b, k) => {
+      b.setAttribute("aria-selected", k === i ? "true" : "false");
+      b.tabIndex = k === i ? 0 : -1;
+    });
+    state.demoLens = btns[i].dataset.lens;
+    renderDemoAccount(state.demo);
+  };
+  btns.forEach((b, i) => {
+    b.addEventListener("click", () => select(i));
+    // Arrow keys move between tabs — the pattern a tablist promises the moment
+    // it claims role="tablist".
+    b.addEventListener("keydown", (e) => {
+      if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+      e.preventDefault();
+      const next = (i + (e.key === "ArrowRight" ? 1 : btns.length - 1)) % btns.length;
+      btns[next].focus();
+      select(next);
+    });
+  });
+}
+
+function renderBankroll(bet) {
+  const val = document.getElementById("bankroll-value");
+  const badge = document.getElementById("bankroll-badge");
+  if (!val || !badge) return;
+  const b = (bet && typeof bet.bankroll === "number") ? bet.bankroll : 0;
+  const cur = (bet && bet.currency) || "USD";
+  val.textContent = `${cur} ${b.toFixed(2)}`;
+  const paper = b === 0;
+  badge.textContent = paper ? "PAPER" : "LIVE";
+  badge.className = "bankroll-badge " + (paper ? "paper" : "live");
+  const input = document.getElementById("bankroll-input");
+  if (input && document.getElementById("bankroll-edit").hidden) input.value = b;
+}
+
+function wireBankroll() {
+  const view = document.querySelector("#bankroll-control .bankroll-view");
+  const form = document.getElementById("bankroll-edit");
+  const editBtn = document.getElementById("bankroll-edit-btn");
+  const cancelBtn = document.getElementById("bankroll-cancel");
+  const input = document.getElementById("bankroll-input");
+  const status = document.getElementById("bankroll-status");
+  if (!form || !editBtn) return;
+  const open = () => { view.hidden = true; form.hidden = false; status.textContent = ""; input.focus(); input.select(); };
+  const close = () => { view.hidden = false; form.hidden = true; };
+  editBtn.addEventListener("click", open);
+  cancelBtn.addEventListener("click", close);
+  form.addEventListener("submit", async (evt) => {
+    evt.preventDefault();
+    const v = Number(input.value);
+    if (!Number.isFinite(v) || v < 0) {
+      status.className = "bankroll-status is-error";
+      status.textContent = "Enter a number ≥ 0.";
+      return;
+    }
+    status.className = "bankroll-status"; status.textContent = "Saving…";
+    try {
+      const r = await fetch("/api/bankroll", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bankroll: v }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        status.className = "bankroll-status is-error";
+        status.textContent = body.detail || "Could not save bankroll.";
+        return;
+      }
+      close();
+      status.className = "bankroll-status is-ok";
+      status.textContent = "Saved.";
+      refreshBet();  // re-size the decision desk off the new bankroll
+    } catch (err) {
+      status.className = "bankroll-status is-error";
+      status.textContent = "Could not save — check connection.";
+    }
+  });
+}
+
+async function refreshBet() {
+  // Decision desk gets its own try: it hits the Kalshi API, and a market
+  // hiccup must not blank the rest of the board.
+  try {
+    const m = encodeURIComponent(state.betMetric);
+    const [bet, mine] = await Promise.all([
+      j(`/api/bet?metric=${m}`), j(`/api/app-bets`)]);
+    renderDecision(bet);
+    renderBankroll(bet);
+    renderAppBets(mine);
+  } catch (err) { /* keep last-good decision/ledger on a transient failure */ }
+
+  // City survey is metric-independent and DB-only (no Kalshi call), so it gets
+  // its own try — a Kalshi hiccup above must not blank it.
+  // Own try/catch, same reason as the cities panel: a hiccup in one DB-only
+  // panel must not blank the rest of the board.
+  try { renderBoard(await j("/api/board")); } catch (err) { /* keep last good */ }
+}
+
+function renderAppBets(rep) {
+  const body = document.getElementById("app-bets-body");
+  if (!body) return;
+  body.textContent = "";
+  const rows = (rep && rep.rows) || [];
+  if (!rows.length) {
+    body.appendChild(el("p", { class: "dist-empty",
+      text: "No bets committed yet — the app commits at each market's decision hour "
+          + "while this laptop is awake." }));
+    return;
+  }
+
+  // Headline counters. `win_rate` is over SETTLED bets only: counting a pending
+  // bet as a loss would make the app look worse than it is mid-week.
+  const wrap = el("div", { class: "pnl-stats" });
+  wrap.appendChild(pnlStat("Bets", String(rep.n)));
+  wrap.appendChild(pnlStat("Settled", String(rep.n_settled)));
+  wrap.appendChild(pnlStat("Wins", `${rep.wins}${rep.n_settled ? ` / ${rep.n_settled}` : ""}`));
+  wrap.appendChild(pnlStat("Win rate",
+    rep.win_rate == null ? "—" : `${Math.round(rep.win_rate * 100)}%`));
+  if (rep.n_settled) {
+    const pnl = rep.pnl;
+    wrap.appendChild(pnlStat(`${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)} P&L`,
+      `${rep.staked.toFixed(2)} staked`, pnl >= 0 ? "pos" : "neg"));
+  }
+  body.appendChild(wrap);
+
+  // MISSED DAYS ARE SHOWN, NOT HIDDEN. "4-1" means something very different if
+  // the app only bet on 5 of 7 days, and the integrity rules can guarantee it
+  // never bets late but not that the laptop was awake.
+  const cov = rep.coverage && rep.coverage.per_metric;
+  if (cov) {
+    const gaps = [];
+    for (const m of ["high", "low"]) {
+      const c = cov[m];
+      if (c && c.expected) {
+        gaps.push(`${m.toUpperCase()} ${c.committed}/${c.expected}` +
+          (c.missing.length ? ` (missed ${c.missing.join(", ")})` : ""));
+      }
+    }
+    if (gaps.length) {
+      const anyMissed = ["high", "low"].some(
+        (m) => cov[m] && cov[m].missing.length);
+      const p = el("p", { class: "city-note",
+        text: `Coverage, last ${rep.coverage.days} settled days — ${gaps.join(" · ")}` +
+              (anyMissed ? " — a gap means the laptop was asleep at the decision hour."
+                         : "") });
+      if (anyMissed) p.style.color = "var(--danger)";
+      body.appendChild(p);
+    }
+  }
+
+  // Julian's spreadsheet column order, so the two ledgers compare line for line.
+  const t = el("table", { class: "data-table micro" });
+  const thead = el("thead", {});
+  const hr = el("tr", {});
+  for (const h of ["what prediction", "date", "time manila", "bucket",
+                   "bet amount", "bet winnings", "win or lose"]) {
+    hr.appendChild(el("th", { text: h }));
+  }
+  thead.appendChild(hr); t.appendChild(thead);
+  const tb = el("tbody", {});
+  for (const r of rows) {
+    const tr = el("tr", {});
+    tr.appendChild(el("td", { text: r.metric }));
+    tr.appendChild(el("td", { class: "mono", text: r.target_date }));
+    tr.appendChild(el("td", { class: "mono", text: r.placed_manila }));
+    tr.appendChild(el("td", { class: "mono", text: r.bucket }));
+    tr.appendChild(el("td", { class: "mono", text: r.stake.toFixed(2) }));
+    tr.appendChild(el("td", { class: "mono", text: r.payout_if_win.toFixed(2) }));
+    // Pending is PENDING, never "lose" — the distinction is the whole point of
+    // an honest scorecard.
+    const cell = el("td", {});
+    if (r.won == null) {
+      cell.textContent = "pending";
+      cell.style.color = "var(--ink-3)";
+    } else {
+      cell.textContent = r.won ? "win" : "lose";
+      cell.style.color = r.won ? "var(--good)" : "var(--danger)";
+      cell.style.fontWeight = "700";
+    }
+    tr.appendChild(cell);
+    tb.appendChild(tr);
+  }
+  t.appendChild(tb);
+  const scroll = el("div", { class: "table-scroll" });
+  scroll.appendChild(t);
+  body.appendChild(scroll);
+}
+
+function wireMetricToggle() {
+  const btns = document.querySelectorAll("#decision-desk .mt-btn");
+  btns.forEach(btn => btn.addEventListener("click", () => {
+    if (btn.dataset.metric === state.betMetric) return;
+    state.betMetric = btn.dataset.metric;
+    btns.forEach(b => b.classList.toggle("is-on", b.dataset.metric === state.betMetric));
+    refreshLive();   // switch the whole board (running extremum, buckets, decision, ledger)
+  }));
+}
+
+async function refreshLive() {
+  try {
+    const mm = encodeURIComponent(state.betMetric);
+    const [today, timing] = await Promise.all([j(`/api/today?metric=${mm}`), j(`/api/timing?metric=${mm}`)]);
+    state.today = today; state.timing = timing; state.lastFetch = Date.now();
+    renderHeader(today);
+    renderStaleBanners(today, timing);
+    renderBuckets(today);
+    renderTomorrow(today);
+    renderDistChart(today);
+    renderTiming(timing);
+    setDefaultNoteDate(today.target_date);
+    tickIndicator();
+  } catch (err) {
+    const ind = document.getElementById("update-indicator");
+    ind.textContent = "update failed — retrying";
+  }
+  await refreshBet();
+  renderTheCall();          // tier 1 — both markets, independent of the toggle
+  renderMiamiCall();        // tier 1 — Miami's own two markets, same shape
+  renderMiamiFreshness();   // Miami's own feed chips, incl. ITS advisory
+  renderMiamiDisagreement();  // and where Kalshi outbids us on ITS two markets
+  renderCities();             // QUEUE 7 planning input, display only
+  // The day-milestone strip is metric-specific too: the HIGH's afternoon
+  // "peak heating" block is meaningless for the LOW, which is set by dawn.
+  try { renderClock(await j(`/api/clock?metric=${mmClock()}`)); } catch (err) { /* non-critical */ }
+  // Own try inside the renderer: a grade failure must never blank the board,
+  // and a stale-but-present strip beats an empty one.
+  renderDayGrade();
+  // Extend the 60s auto-refresh cycle to the notes list too -- this only
+  // re-renders #notes-list, never touches the textarea, so in-progress
+  // typing in the field-notes form survives every poll.
+  refreshNotes();
+}
+
+function mmClock() { return encodeURIComponent(state.betMetric); }
+
+async function loadOnce() {
+  try {
+    const [clockEvents, history] = await Promise.all([j(`/api/clock?metric=${mmClock()}`), j("/api/history")]);
+    renderClock(clockEvents);
+    renderHistory(history);
+  } catch (err) { /* non-critical sections; leave loading state visible */ }
+  try {
+    renderScorecard(await j("/api/scorecard"));
+  } catch (err) { /* non-critical section; leave loading state visible */ }
+  // Own try: the demo account's seed is a live Kalshi balance read, so a
+  // market hiccup must leave the rest of the board alone.
+  try { renderDemoAccount(await j("/api/demo-account")); } catch (err) { /* keep last good */ }
+}
+
+function startPolling() {
+  if (state.pollTimer) return;
+  state.pollTimer = setInterval(() => { if (!document.hidden) refreshLive(); }, POLL_MS);
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) refreshLive();
+});
+
+initNoteForm();
+wireMetricToggle();
+wireBankroll();
+wireDemoLens();
+wireBench();
+refreshLive();
+loadOnce();
+startPolling();
+state.tickTimer = setInterval(tickIndicator, 1000);
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,47 @@
+[project]
+name = "highcast"
+version = "0.1.0"
+requires-python = ">=3.12"
+# ⚠️ UPPER BOUNDS ADDED 2026-08-29 AFTER A 19-HOUR OUTAGE (HANDOFF 3.17).
+# `.venv` was deleted; rebuilding from lower bounds alone pulled pandas 2.x ->
+# 3.0.5, numpy -> 2.5.2, scikit-learn -> 1.9.0 in one step. The suite passed, but
+# a MAJOR bump can move model numerics in ways tests do not catch, and a recovery
+# you cannot reproduce is not a recovery. Caps are the next major above what is
+# installed and tested; `requirements-lock.txt` pins the exact set.
+dependencies = [
+  "httpx>=0.27,<1",
+  "pandas>=2.2,<4",
+  "numpy>=1.26,<3",
+  "lightgbm>=4.3,<5",
+  "scikit-learn>=1.4,<2",
+  "fastapi>=0.110,<1",
+  "uvicorn>=0.29,<1",
+  "jinja2>=3.1,<4",
+  "pyyaml>=6.0,<7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0,<10"]
+# Kalshi's trading API signs each request with RSA-PSS. Deliberately OPTIONAL:
+# the whole app -- including the order bot's DRY-RUN path -- runs without it.
+# You only need this installed to actually arm the bot and place real orders.
+trade = ["cryptography>=42,<51"]
+
+[project.scripts]
+highcast = "highcast.cli:main"
+sandbox = "sandbox.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/highcast", "src/sandbox"]
+
+[tool.pytest.ini_options]
+markers = ["live: hits real network endpoints"]
+addopts = "-m 'not live'"
+testpaths = ["tests"]
+filterwarnings = [
+  "ignore:Using `httpx` with `starlette.testclient` is deprecated.*",
+]
