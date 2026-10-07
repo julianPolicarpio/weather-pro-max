@@ -46,3 +46,21 @@ def test_error_is_reported_not_logged_and_does_not_stop_others(tmp_path):
         assert s["done"] == 1 and s["errors"] == [
             {"source": "cli", "key": "A", "error": "RuntimeError: boom"}]
         assert [r[0] for r in c.execute("SELECT key FROM backfill_log")] == ["B"]
+
+
+def test_empty_result_is_not_logged_so_it_is_retried(tmp_path):
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        s = run_chunks(c, [Chunk("cli", "EMPTY", False, lambda: [("cli_daily", [])])],
+                       now_iso=NOW, progress=lambda m: None)
+        assert s["done"] == 1
+        assert c.execute("SELECT COUNT(*) FROM backfill_log").fetchone()[0] == 0
+
+
+def test_write_error_fails_only_that_chunk_and_rolls_back(tmp_path):
+    bad_rows = lambda: [("cli_daily", [_row("2024-01-03", 1)]), ("no_such_table", [{"x": 1}])]  # noqa: E731
+    good = lambda: [("cli_daily", [_row("2024-01-04", 2)])]   # noqa: E731
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        s = run_chunks(c, [Chunk("cli", "BAD", False, bad_rows), Chunk("cli", "OK", False, good)],
+                       now_iso=NOW, progress=lambda m: None)
+        assert s["done"] == 1 and s["errors"][0]["key"] == "BAD"
+        assert [r[0] for r in c.execute("SELECT date FROM cli_daily")] == ["2024-01-04"]
