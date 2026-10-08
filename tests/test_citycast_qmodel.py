@@ -44,3 +44,25 @@ def test_pmf_sums_to_one_and_truncates_high_below_bound():
     assert abs(sum(pmf.values()) - 1) < 1e-9
     cut = pmf_from_quantiles(q, 1.0, 52.4, "high")
     assert min(k for k, v in cut.items() if v > 0) >= 52 and abs(sum(cut.values()) - 1) < 1e-9
+
+
+def test_pmf_truncates_low_above_bound():
+    q = dict(zip(QUANTILES, np.linspace(40, 60, len(QUANTILES))))
+    cut = pmf_from_quantiles(q, 1.0, 47.6, "low")
+    assert max(k for k, v in cut.items() if v > 0) <= 48 and abs(sum(cut.values()) - 1) < 1e-9
+
+
+def test_pmf_rejects_unknown_metric():
+    import pytest
+    q = dict(zip(QUANTILES, np.linspace(40, 60, len(QUANTILES))))
+    with pytest.raises(ValueError, match="metric"):
+        pmf_from_quantiles(q, 1.0, float("nan"), "hgh")
+
+
+def test_station_absent_from_training_keeps_fixed_codes():
+    df = _frame()
+    only_nyc = df[df["station"] == "KNYC"]
+    m = QuantileModel("shared", ("KLAX", "KNYC")).fit(only_nyc, date(2025, 1, 1))
+    X = m._X(df.head(4))
+    assert list(X["station"].cat.categories) == ["KLAX", "KNYC"]
+    assert m.predict_y_quantiles(df.head(4)).shape == (4, len(QUANTILES))
