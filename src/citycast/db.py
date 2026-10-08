@@ -35,8 +35,11 @@ CREATE TABLE IF NOT EXISTS wf_predictions (station TEXT, metric TEXT, event_date
   pmf_json TEXT NOT NULL, k REAL NOT NULL, created_at TEXT NOT NULL,
   PRIMARY KEY (station, metric, event_date, asof_utc, variant));
 CREATE TABLE IF NOT EXISTS model_choice (station TEXT, metric TEXT, variant TEXT NOT NULL,
-  crps_sel REAL, mos_crps_sel REAL, gate_ci_hi REAL, gate_pass INTEGER NOT NULL,
+  crps_sel REAL, mos_crps_sel REAL, gate_ci_hi REAL, sel_pass INTEGER NOT NULL,
+  crps_rep REAL, mos_crps_rep REAL, rep_days INTEGER NOT NULL, gate_pass INTEGER NOT NULL,
   decided_at TEXT NOT NULL, PRIMARY KEY (station, metric));
+CREATE TABLE IF NOT EXISTS eval_log (run_at TEXT, metric TEXT, fingerprint TEXT NOT NULL,
+  report_scored INTEGER NOT NULL, PRIMARY KEY (run_at, metric));
 CREATE TABLE IF NOT EXISTS live_predictions (station TEXT, metric TEXT, event_date TEXT,
   issued_utc TEXT, variant TEXT NOT NULL, anchor REAL, run_ext REAL, quantiles_json TEXT NOT NULL,
   pmf_json TEXT NOT NULL, k REAL NOT NULL, PRIMARY KEY (station, metric, event_date, issued_utc));
