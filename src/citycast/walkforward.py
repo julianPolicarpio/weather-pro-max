@@ -13,6 +13,7 @@ K_GRID = tuple(round(0.6 + 0.1 * i, 1) for i in range(11))
 MIN_TRAIN_ROWS = 1000
 MIN_CITY_ROWS = 300
 MIN_K_SPAN_D = 180
+EMBARGO_D = 1       # spec §3.7: y(start-1) is unknown at the as-of points of day `start`
 
 
 def quarters(first: date, today: date) -> list[tuple[str, date, date]]:
@@ -72,26 +73,34 @@ def run(conn, df: pd.DataFrame, metric: str, stations: tuple[str, ...], now_iso,
         today: date | None = None, progress=print) -> int:
     df = df[df["metric"] == metric] if "metric" in df else df
     known = df[df["y"].notna()]
+    if (known.groupby(["station", "event_date"])["y"].nunique() > 1).any():
+        raise ValueError("inconsistent y within a (station, event_date)")
     truth = {(r.station, r.event_date): int(r.y) for r in known[["station", "event_date", "y"]]
              .drop_duplicates(["station", "event_date"]).itertuples(index=False)}
+    with conn:                       # a run is reproducible from the current code, never from stale rows
+        conn.execute("DELETE FROM wf_predictions WHERE metric=?", (metric,))
     written = 0
     for label, start, end in quarters(first_fold, today or date.today()):
-        train = known[(known["event_date"] >= train_start.isoformat()) & (known["event_date"] < start.isoformat())]
+        cutoff = start - timedelta(days=EMBARGO_D)
+        train = known[(known["event_date"] >= train_start.isoformat()) & (known["event_date"] < cutoff.isoformat())]
         test = known[(known["event_date"] >= start.isoformat()) & (known["event_date"] < end.isoformat())]
-        if len(train) < MIN_TRAIN_ROWS or test.empty:
+        if test.empty:
+            progress(f"{metric} {label}: skipped (no test rows)")
+            continue
+        if len(train) < MIN_TRAIN_ROWS:
             progress(f"{metric} {label}: skipped ({len(train)} train rows)")
             continue
         now = now_iso()
         rows: list[dict] = []
         shared = QuantileModel("shared", stations).fit(train, start)
-        k_shared = {s: choose_k(_prev(conn, s, metric, "shared", start, truth), metric) for s in test["station"].unique()}
+        k_shared = {s: choose_k(_prev(conn, s, metric, "shared", cutoff, truth), metric) for s in test["station"].unique()}
         rows += _rows(test, shared.predict_y_quantiles(test), metric, "shared", label, k_shared, now)
         for s in sorted(test["station"].unique()):
             tr, te = train[train["station"] == s], test[test["station"] == s]
             if len(tr) < MIN_CITY_ROWS:
                 continue
             city = QuantileModel("city", stations).fit(tr, start)
-            k_city = {s: choose_k(_prev(conn, s, metric, "city", start, truth), metric)}
+            k_city = {s: choose_k(_prev(conn, s, metric, "city", cutoff, truth), metric)}
             rows += _rows(te, city.predict_y_quantiles(te), metric, "city", label, k_city, now)
         for r in test[test["f_MEX"].notna()].itertuples(index=False):
             rows.append({"station": r.station, "metric": metric, "event_date": r.event_date,
