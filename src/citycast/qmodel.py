@@ -61,6 +61,8 @@ def scale_quantiles(q: dict[float, float], k: float) -> dict[float, float]:
 
 
 def pmf_from_quantiles(q: dict[float, float], k: float, bound: float, metric: str) -> dict[int, float]:
+    if metric not in ("high", "low"):   # a typo would otherwise truncate on the wrong side
+        raise ValueError(f"metric must be 'high' or 'low', got {metric!r}")
     pmf = bucket_probs(scale_quantiles(q, k))
     if bound is not None and not math.isnan(bound):
         pmf = truncate_at_bound(pmf, bound, "max" if metric == "high" else "min")
