@@ -178,7 +178,10 @@ folds only (k = 1.0 until 6 prior months exist). Applied before the pmf is built
 
 ### 3.7 Walk-forward protocol
 Quarterly refits: for each quarter Q from 2022-Q3 to the latest complete quarter, train on all
-rows with D < start(Q), predict every row with D in Q. Training data begins 2022-01-01 (MOS
+rows with D < start(Q) − 1 day, predict every row with D in Q. The one-day embargo (revised
+2026-10-09) exists because Q's first event has as-of points on start(Q) − 1, when that day's
+own high/low is not yet known; the k history (§3.6) uses the same cutoff. Each run first deletes
+the metric's existing `wf_predictions`, so k never reads rows from an older configuration. Training data begins 2022-01-01 (MOS
 depth). Output table in `history.db`:
 ```sql
 CREATE TABLE wf_predictions (station TEXT, metric TEXT, event_date TEXT, asof_utc TEXT,
