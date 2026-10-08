@@ -12,7 +12,8 @@ from highcast.buckets import pmf_mass
 SELECTION_END = "2026-04-01"
 MARKET_STALE_H = 2
 REPORT_MIN_DAYS = 60
-FINGERPRINT_MODULES = ("asof", "features", "dataset", "qmodel", "walkforward", "evaluate")
+FINGERPRINT_MODULES = ("asof", "features", "dataset", "qmodel", "metrics",
+                       "walkforward", "evaluate")
 
 
 def code_fingerprint() -> str:
@@ -81,6 +82,7 @@ def select_and_gate(conn, metric: str, now_iso) -> list[dict]:
                "rep_days": rep_days, "gate_pass": int(sel_pass and rep_ok), "decided_at": now_iso()}
         out.append(row)
     with conn:
+        conn.execute("DELETE FROM model_choice WHERE metric=?", (metric,))
         conn.executemany("INSERT OR REPLACE INTO model_choice VALUES (:station,:metric,:variant,:crps_sel,"
                          ":mos_crps_sel,:gate_ci_hi,:sel_pass,:crps_rep,:mos_crps_rep,:rep_days,:gate_pass,"
                          ":decided_at)", out)
@@ -112,7 +114,7 @@ def market_brier(conn, metric: str, period: str | None = None) -> dict:
     elif period == "report":
         df = df[df["event_date"] >= SELECTION_END]
     canon = canonical_events(conn)
-    markets = conn.execute("SELECT ticker, event_ticker, station, event_date, lo, hi FROM kalshi_markets "
+    markets = conn.execute("SELECT ticker, event_ticker, station, event_date, lo, hi, result FROM kalshi_markets "
                            "WHERE metric=? AND NOT (lo IS NULL AND hi IS NULL) AND result IN ('yes','no')",
                            (metric,)).fetchall()
     by_event: dict[tuple[str, str], list] = {}
@@ -123,13 +125,13 @@ def market_brier(conn, metric: str, period: str | None = None) -> dict:
     for r in df.itertuples(index=False):
         t = datetime.fromisoformat(r.asof_utc)
         lo_iso = (t - timedelta(hours=MARKET_STALE_H)).isoformat()
-        for ticker, event_ticker, _, _, lo, hi in by_event.get((r.station, r.event_date), []):
+        for ticker, event_ticker, _, _, lo, hi, result in by_event.get((r.station, r.event_date), []):
             c = conn.execute("SELECT yes_bid, yes_ask FROM kalshi_candles WHERE ticker=? AND end_utc>? "
                              "AND end_utc<=? AND yes_bid IS NOT NULL AND yes_ask IS NOT NULL "
                              "ORDER BY end_utc DESC LIMIT 1", (ticker, lo_iso, r.asof_utc)).fetchone()
             if c is None:
                 continue
-            won = int((lo is None or r.y >= lo) and (hi is None or r.y <= hi))
+            won = 1 if result == "yes" else 0          # Kalshi's own settlement (spec §4.1)
             p_model = pmf_mass(r.pmf, lo, hi) or 0.0
             mid = (c[0] + c[1]) / 2
             diffs.setdefault(r.station, {}).setdefault(event_ticker, []).append(
@@ -144,7 +146,10 @@ def market_brier(conn, metric: str, period: str | None = None) -> dict:
 def _freeze_warning(conn) -> list[str]:
     first = conn.execute("SELECT run_at, fingerprint FROM eval_log WHERE report_scored=1 "
                          "ORDER BY run_at LIMIT 1").fetchone()
-    if first is None or first[1] == code_fingerprint():
+    if first is None:
+        return []
+    seen = {r[0] for r in conn.execute("SELECT DISTINCT fingerprint FROM eval_log WHERE run_at>=?", (first[0],))}
+    if len(seen) <= 1 and first[1] == code_fingerprint():
         return []
     return [f"> **WARNING:** the report period was first scored on {first[0]} under different modelling "
             "code. It is no longer an untouched test; only the sandbox forward test counts.", ""]
@@ -155,7 +160,9 @@ def write_report(conn, path: Path) -> Path:
              f"Selection period: event dates before {SELECTION_END}. Report period: on/after. "
              "RPS = discrete CRPS (lower is better). Gate = selection CI hi < 0 AND report-period mean "
              f"below mosnorm over >= {REPORT_MIN_DAYS} days. "
-             "Market Brier diff < 0 means the model beat the market mid.", ""]
+             "Market Brier diff < 0 means the model beat the market mid. "
+             "Selection-period columns are in-sample for the variant choice; the report-period columns "
+             "are the out-of-sample check.", ""]
     for metric in ("high", "low"):
         lines += [f"## {metric}", "",
                   "| station | variant | RPS (sel) | mosnorm RPS (sel) | gate CI hi | RPS (rep) | "
