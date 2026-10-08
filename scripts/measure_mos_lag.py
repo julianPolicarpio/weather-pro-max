@@ -42,7 +42,7 @@ def main() -> int:
                         seen.setdefault((st, m, rt), None if first_poll else now)
                 except Exception as e:  # noqa: BLE001 - one failed poll is not fatal
                     print(f"poll error {st} {m}: {e}", file=sys.stderr)
-                time.sleep(1.0)
+                time.sleep(5.0)   # IEM throttles bulk MOS requests even at 1/s
         first_poll = False
         time.sleep(POLL_S)
     lags: dict[str, list[float]] = {}
