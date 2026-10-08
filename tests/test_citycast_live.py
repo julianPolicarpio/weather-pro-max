@@ -106,7 +106,7 @@ def test_low_prediction_has_no_mass_above_rounded_running_min(tmp_path, monkeypa
         live.predict(c, _FakeCtx(run_ext=41.3), "low", NOW)
         row = c.execute("SELECT pmf_json FROM live_predictions WHERE event_date='2024-01-04'").fetchone()
         pmf = {int(k): v for k, v in json.loads(row[0]).items()}
-        assert all(v == 0 for k, v in pmf.items() if k >= 42)
+        assert max(pmf) == 41                     # truncate_at_bound drops every integer above the rounded minimum
         assert pmf[41] > 0 and math.isclose(sum(pmf.values()), 1.0, abs_tol=1e-6)
 
 
