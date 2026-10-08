@@ -192,3 +192,22 @@ def test_truth_uses_final_reports_only(tmp_path):
         ctx = _ctx(c, tmp_path)
         assert ctx.truth("KNYC", "high", date(2024, 1, 5)) == 47.0
         assert math.isnan(ctx.truth("KNYC", "high", date(2024, 1, 6)))
+
+
+def test_last_obs_excludes_a_reading_valid_exactly_at_t(tmp_path):
+    """A METAR valid at t is published minutes after t (re-review mutation 3)."""
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c)
+        with c:
+            db.upsert(c, "obs", [_obs(T_SAME.isoformat(), 99.0)])
+        r = _ctx(c, tmp_path).row("KNYC", "high", D, T_SAME)
+        assert r["last_tmpf"] == 45.0
+
+
+def test_anchor_uses_full_run_published_exactly_at_lag(tmp_path):
+    """mos_full's boundary is inclusive like mos's (re-review mutation 1b)."""
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        with c:
+            db.upsert(c, "mos_runs", [_mos("MEX", (T_SAME - timedelta(hours=5)).isoformat(), 51.0)])
+        r = _ctx(c, tmp_path).row("KNYC", "high", D, T_SAME)
+        assert r is not None and r["anchor"] == 51.0
