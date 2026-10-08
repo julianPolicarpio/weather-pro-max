@@ -16,6 +16,7 @@
 - Commit only when Julian asks. Tests: `.venv/bin/python -m pytest`; unit tests never load Laya or touch the network (inject a `predict_fn`).
 - Never write `data/highcast.db` / `data/sandbox.db` from citycast; sandbox reads `data/history.db` with `?mode=ro`. Never import `highcast.kalshi_client`.
 - Splits by event_date: train < 2026-04-01; validation 2026-04-01 … 2026-06-30; test 2026-07-01 … 2026-09-30. The test split is read only by `citycast gate final-report`, which refuses a second run without `--force`.
+- Win/loss in decision rows = Kalshi's own `result` ("yes"/"no"), not the CLI (14 archive events settled differently; 6 changed a payout); markets without a yes/no result (8 cancelled events) are excluded; one canonical event per city-day (`citycast.evaluate.canonical_events`, from plan 2b).
 - Decision rule for every contender: bet iff P(win) − ask − fee ≥ margin; at most one bet per ticker (the earliest as-of point where the rule fires); 1 contract; fee = `highcast.fees.fee_per_contract(1, ask)`.
 - Margins tuned on validation over {0.00, 0.01, …, 0.10} maximising profit per decision with ≥ 50 bets; B1 uses `MIN_EDGE` (0.03) untuned.
 - Profit per decision = Σ profit of bets ÷ number of distinct tickers in the split; clusters = city-day (station, metric, event_date); cluster bootstrap 2,000 resamples, seed 0.
@@ -58,7 +59,7 @@ This removes the one unknown in the spec (§4.5) before any export code is writt
 - Test: `tests/test_citycast_decisions.py`
 
 **Interfaces:**
-- Consumes: `wf_predictions`, `model_choice`, `kalshi_markets`, `kalshi_candles`, `cli_daily`; `highcast.buckets.pmf_mass`; `highcast.fees.fee_per_contract`; `highcast.timeutil.climate_day_bounds`; `citycast.stations.load_stations`.
+- Consumes: `wf_predictions`, `model_choice`, `kalshi_markets` (incl. `result`), `kalshi_candles`; `citycast.evaluate.canonical_events` (plan 2b Task 7); `highcast.buckets.pmf_mass`; `highcast.fees.fee_per_contract`; `highcast.timeutil.climate_day_bounds`; `citycast.stations.load_stations`.
 - Produces: `GATE_FEATURES: list[str]`; `gate_features(*, station, metric, event_date, lo, hi, pmf, quantiles, run_ext, bid, ask, asof_iso, close_iso, climate_end_iso) -> dict`; `build(conn, stations: dict, progress=print) -> int` (rows written, replaces table contents).
 
 `GATE_FEATURES` (exact): `p_model, model_median, model_iqr, ask, bid, mid, spread, market_p, fee, edge, hours_to_close, lead_h, run_gap_to_lo, run_gap_to_hi, month`. `model_iqr` = q(0.80) − q(0.20) (Q has no 0.25/0.75).
@@ -114,10 +115,12 @@ def _seed(c):
             {**base, "asof_utc": "2025-01-05T12:00:00+00:00", "variant": "city", "pmf_json": json.dumps({40: 1.0})}])
         mk = {"series": "KXHIGHNY", "event_ticker": "E", "station": "KNYC", "metric": "high",
               "event_date": "2025-01-05", "open_time": "2025-01-04T15:00:00+00:00",
-              "close_time": "2025-01-06T04:59:00+00:00", "result": None, "expiration_value": "50", "raw": "{}"}
-        db.upsert(c, "kalshi_markets", [{**mk, "ticker": "A", "lo": 50, "hi": 51},
+              "close_time": "2025-01-06T04:59:00+00:00", "result": "no", "expiration_value": "50", "raw": "{}"}
+        db.upsert(c, "kalshi_markets", [{**mk, "ticker": "A", "lo": 50, "hi": 51, "result": "yes"},
                                         {**mk, "ticker": "B", "lo": 52, "hi": 53},
-                                        {**mk, "ticker": "C", "lo": 48, "hi": 49}])
+                                        {**mk, "ticker": "C", "lo": 48, "hi": 49},
+                                        # cancelled market: no yes/no result, never a decision row
+                                        {**mk, "ticker": "D", "lo": 46, "hi": 47, "result": ""}])
         db.upsert(c, "kalshi_candles", [
             {"ticker": "A", "end_utc": "2025-01-05T11:00:00+00:00", "yes_bid": 0.40, "yes_ask": 0.44, "volume": 1, "open_interest": 1},
             {"ticker": "B", "end_utc": "2025-01-05T09:00:00+00:00", "yes_bid": 0.10, "yes_ask": 0.12, "volume": 1, "open_interest": 1},
@@ -155,6 +158,7 @@ CREATE TABLE IF NOT EXISTS gate_scores (contender TEXT, ticker TEXT, asof_utc TE
 import json
 from datetime import date, datetime, timedelta
 
+from citycast.evaluate import canonical_events
 from highcast.buckets import pmf_mass
 from highcast.fees import fee_per_contract
 from highcast.timeutil import climate_day_bounds
@@ -189,27 +193,25 @@ def gate_features(*, station, metric, event_date, lo, hi, pmf, quantiles, run_ex
 
 def build(conn, stations: dict, progress=print) -> int:
     choice = {(s, m): v for s, m, v in conn.execute("SELECT station, metric, variant FROM model_choice")}
-    truth = {}
-    for s, d, hi_f, lo_f in conn.execute("SELECT station, date, high_f, low_f FROM cli_daily WHERE final=1"):
-        truth[(s, "high", d)], truth[(s, "low", d)] = hi_f, lo_f
+    canon = canonical_events(conn)
     markets: dict[tuple, list] = {}
+    # won/profit come from what Kalshi paid (spec §4.1), so only settled yes/no markets qualify
     for m in conn.execute("SELECT ticker, event_ticker, station, metric, event_date, lo, hi, open_time, "
-                          "close_time FROM kalshi_markets WHERE NOT (lo IS NULL AND hi IS NULL)"):
-        markets.setdefault((m[2], m[3], m[4]), []).append(m)
+                          "close_time, result FROM kalshi_markets WHERE NOT (lo IS NULL AND hi IS NULL) "
+                          "AND result IN ('yes','no')"):
+        if m[1] in canon:
+            markets.setdefault((m[2], m[3], m[4]), []).append(m)
     rows = []
     preds = conn.execute("SELECT station, metric, event_date, asof_utc, variant, quantiles_json, pmf_json, "
                          "run_ext FROM wf_predictions WHERE variant IN ('shared','city')").fetchall()
     for s, metric, d, asof, variant, qj, pj, run_ext in preds:
         if choice.get((s, metric)) != variant or s not in stations:
             continue
-        y = truth.get((s, metric, d))
-        if y is None:
-            continue
         pmf = {int(k): v for k, v in json.loads(pj).items()}
         q = json.loads(qj)
         end_iso = climate_day_bounds(date.fromisoformat(d), stations[s].std_utc_offset)[1].isoformat()
         stale_iso = (datetime.fromisoformat(asof) - timedelta(hours=STALE_H)).isoformat()
-        for ticker, event_ticker, _, _, _, lo, hi, open_t, close_t in markets.get((s, metric, d), []):
+        for ticker, event_ticker, _, _, _, lo, hi, open_t, close_t, result in markets.get((s, metric, d), []):
             if (open_t and open_t > asof) or close_t <= asof:
                 continue
             c = conn.execute("SELECT yes_bid, yes_ask FROM kalshi_candles WHERE ticker=? AND end_utc>? "
@@ -220,7 +222,7 @@ def build(conn, stations: dict, progress=print) -> int:
             f = gate_features(station=s, metric=metric, event_date=d, lo=lo, hi=hi, pmf=pmf, quantiles=q,
                               run_ext=run_ext, bid=c[0], ask=c[1], asof_iso=asof, close_iso=close_t,
                               climate_end_iso=end_iso)
-            won = int((lo is None or y >= lo) and (hi is None or y <= hi))
+            won = int(result == "yes")
             rows.append({**f, "ticker": ticker, "asof_utc": asof, "event_ticker": event_ticker,
                          "won": won, "profit_if_bet": won - f["ask"] - f["fee"]})
     cols = ["ticker", "asof_utc", "event_ticker", "station", "metric", "event_date", "lo", "hi",

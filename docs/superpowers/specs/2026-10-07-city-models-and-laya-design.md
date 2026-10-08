@@ -134,9 +134,18 @@ Local wall-clock hours on D−1 at 06, 09, 12, 15, 18, 21 and on D at 00, 03, 06
 
 ### 3.3 Features (all strictly as-of t; `citycast/features.py`)
 For each MOS model in (MEX, GFS, NBS, NBE): `f_{model}` = value_f of the latest run with
-`runtime_utc ≤ t − 1 h` (1 h publication lag) for (s, D, m), and `age_{model}` = hours since that
-runtime; NaN when none. `anchor` = mean of available f_NBS and f_MEX, else f_GFS, else f_NBE
-(rows with no anchor are dropped). `spread_mos` = max − min of available f_*. Climatology
+`runtime_utc ≤ t − lag(model)` for (s, D, m); `age_{model}` = hours since that runtime;
+`npts_{model}` = that run's `n_points` (how many forecast points it has inside the climate day);
+NaN when none. **Publication lag per model** (`PUB_LAG_H`, revised 2026-10-08 after the 2a review):
+until measured, the conservative defaults GFS 5 h, MEX 5 h, NBS 3 h, NBE 3 h; 2b Task 0 measures
+first-seen times on IEM's archive for 24 h and may only replace a default with
+`max(observed max lag) + 0.5 h` (never shorter than observed). A lag that is too short leaks a
+forecast that was not yet published into training. `anchor` = mean of the available full-coverage
+values of f_NBS and f_MEX, else f_GFS, else a full-coverage f_NBE (rows with no anchor are
+dropped); an NBS/NBE value counts as full-coverage when `npts ≥ 6` (≥ 18 h of the climate day).
+Measured on the 2a archive: NBS/NBE daily max from 3-hourly points runs low (≈ −1.5 °F NBS,
+≈ −4.8 °F NBE) and ~357 k runs cover only part of a day; the residual model absorbs the bias and
+`npts_*` tells it how partial a run is. `spread_mos` = max − min of available f_*. Climatology
 `clim_mean`, `clim_sd` = mean/sd of CLI final values for s, m over ±7 days of D's day-of-year in
 **years before D's year** only. Persistence `prev_obs` = visible extreme of the previous climate day
 from `obs` with `asof_utc = t` (via `latentmax.visible_running_extremum`). Same-day (t ≥ climate
@@ -178,8 +187,8 @@ CREATE TABLE wf_predictions (station TEXT, metric TEXT, event_date TEXT, asof_ut
 
 ### 3.8 Evaluation, selection and gate (`citycast evaluate`)
 - **CRPS** on the integer pmf vs CLI, per (station, metric, variant), clustered by event date.
-- **Market Brier**: for each Kalshi market with a candle within 2 h before an as-of point while
-  open, binary Brier of P_model(y ∈ [lo, hi]) vs the outcome, beside the market mid
+- **Market Brier**: for each Kalshi market of a canonical event (§4.1) whose `result` is
+  "yes"/"no", with a candle within 2 h before an as-of point while open, binary Brier of P_model(y ∈ [lo, hi]) vs the outcome, beside the market mid
   ((bid+ask)/2) at that hour; difference (model − market) with a cluster bootstrap by event
   (2,000 resamples) and its 95 % CI.
 - **Selection period** = folds 2022-Q3 … 2026-Q1; **report period** = 2026-Q2 onward.
@@ -210,7 +219,13 @@ is open at t and a candle exists in (t − 2 h, t]:
 wf_prediction mass on [lo, hi]), `model_median, model_iqr` (q0.80 − q0.20)`, ask, bid, mid, spread, market_p` (= mid; ask when
 no bid), `fee` (`fee_per_contract(1, ask)`, as the sandbox),
 `edge = p_model − ask − fee, hours_to_close, lead_h, run_gap_to_lo, run_gap_to_hi` (NaN pre-day),
-`month, won` (y ∈ [lo, hi] using CLI final), `profit_if_bet = won − ask − fee`.
+`month, won` (**Kalshi's own `result`**: 1 for "yes", 0 for "no"), `profit_if_bet = won − ask − fee`.
+Win/loss comes from what Kalshi paid, not the CLI: the 2a archive has 14 events where Kalshi settled
+on a different value than the NWS final report (6 of them changed a payout); the city models keep
+CLI final as weather truth. Markets whose `result` is not "yes"/"no" (8 cancelled events in the
+archive) are excluded. Where one (station, metric, event_date) has more than one event (KMDW
+2024-02-28), only the canonical event is used: the one with the most markets, ties broken by the
+lexicographically smallest `event_ticker` (`evaluate.canonical_events`, also used in §3.8).
 Rows with ask < 0.01 or > 0.99 are excluded. One sandbox-style constraint applies at evaluation
 time, not build time: at most one bet per ticker (the first as-of point where the rule fires).
 

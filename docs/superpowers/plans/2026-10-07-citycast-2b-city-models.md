@@ -15,7 +15,7 @@
 
 - Commit only when Julian asks. Tests: `.venv/bin/python -m pytest`. No network in unit tests.
 - Never write `data/highcast.db` or `data/sandbox.db` from citycast; the sandbox reads `data/history.db` only with `?mode=ro`. Never import `highcast.kalshi_client` under `src/citycast/`.
-- **As-of rule:** every feature uses only data issued at or before the as-of instant t; MOS runs need `runtime_utc ≤ t − 1 h`; climatology uses only years before the target's year; observations use `latentmax.visible_running_extremum(..., asof_utc=t)` (never raw spot maxima).
+- **As-of rule:** every feature uses only data issued at or before the as-of instant t; MOS runs need `runtime_utc ≤ t − PUB_LAG_H[model]` (defaults GFS 5, MEX 5, NBS 3, NBE 3 hours until Task 0 measures them; a measured value may only replace a default as `observed max + 0.5 h`, never shorter); climatology uses only years before the target's year; observations use `latentmax.visible_running_extremum(..., asof_utc=t)` (never raw spot maxima).
 - Running extremum → bound: high uses `iv[0]`, low uses `iv[1]` (as `highcast.signals`).
 - As-of grid: local hours 06, 09, 12, 15, 18, 21 on D−1 and 00, 03, …, 21 on D; drop points at or after the climate-day end.
 - Quantiles Q = (0.02, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 0.98). LightGBM params: `num_leaves=31, learning_rate=0.05, n_estimators=400, min_child_samples=40, subsample=0.8, subsample_freq=1, colsample_bytree=0.8`. Recency half-life 730 days.
@@ -39,6 +39,92 @@
 | `src/citycast/live.py` | final training, live prediction |
 | `src/citycast/cli.py` (modify) | `dataset`, `walkforward`, `evaluate`, `train`, `predict` |
 | `src/sandbox/bots.py`, `cycle.py`, `cli.py` (modify) | `CitycastBot` and its account |
+
+---
+
+### Task 0: Measure MOS publication lags (controller task, runs 24 h unattended)
+
+Why: the as-of rule needs each model's real delay between `runtime_utc` and when IEM's archive
+serves the run. The 2a review found the flat 1 h in the first draft was too short for GFS/MEX
+[Likely ~4 h]. Until this task finishes, Task 2 uses the conservative `PUB_LAG_H` defaults
+(GFS 5, MEX 5, NBS 3, NBE 3 h).
+
+**Files:** Create `scripts/measure_mos_lag.py`; output `docs/reports/mos-publication-lag-<date>.md`.
+
+- [ ] **Step 1: Write the script**
+
+```python
+# scripts/measure_mos_lag.py
+"""Poll IEM's MOS archive (the endpoint the backfill uses) every 15 min for 24 h and record when
+each new run first appears. Lag = first_seen - runtime. One request per station/model per poll."""
+import csv
+import io
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import httpx
+
+URL = "https://mesonet.agron.iastate.edu/cgi-bin/request/mos.py"
+STATIONS = ("KNYC", "KLAX", "KDEN")
+MODELS = ("GFS", "MEX", "NBS", "NBE")
+POLL_S = 900
+HOURS = 24
+
+
+def latest_runtimes(station: str, model: str) -> set[str]:
+    now = datetime.now(timezone.utc)
+    text = httpx.get(URL, params={"station": station, "model": model, "format": "csv",
+                                  "sts": (now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%MZ"),
+                                  "ets": (now + timedelta(days=1)).strftime("%Y-%m-%dT%H:%MZ")},
+                     timeout=120).text
+    return {row["runtime"][:16] for row in csv.DictReader(io.StringIO(text)) if row.get("runtime")}
+
+
+def main() -> int:
+    seen: dict[tuple[str, str, str], datetime] = {}
+    first_poll = True
+    end = time.time() + HOURS * 3600
+    while time.time() < end:
+        now = datetime.now(timezone.utc)
+        for st in STATIONS:
+            for m in MODELS:
+                try:
+                    for rt in latest_runtimes(st, m):
+                        # runs already present at the first poll have unknown first-seen times
+                        seen.setdefault((st, m, rt), None if first_poll else now)
+                except Exception as e:  # noqa: BLE001 - one failed poll is not fatal
+                    print(f"poll error {st} {m}: {e}", file=sys.stderr)
+                time.sleep(1.0)
+        first_poll = False
+        time.sleep(POLL_S)
+    lags: dict[str, list[float]] = {}
+    for (st, m, rt), t in seen.items():
+        if t is not None:
+            run = datetime.fromisoformat(rt.replace(" ", "T")).replace(tzinfo=timezone.utc)
+            lags.setdefault(m, []).append((t - run).total_seconds() / 3600)
+    out = Path(f"docs/reports/mos-publication-lag-{datetime.now(timezone.utc).date()}.md")
+    lines = ["# MOS publication lag (IEM archive first-seen, 15-min polls)", "",
+             "| model | runs seen | min h | max h | proposed PUB_LAG_H (max + 0.5, poll-rounded) |",
+             "|---|---|---|---|---|"]
+    for m in MODELS:
+        v = sorted(lags.get(m, []))
+        if v:
+            lines.append(f"| {m} | {len(v)} | {v[0]:.2f} | {v[-1]:.2f} | {v[-1] + 0.5:.1f} |")
+        else:
+            lines.append(f"| {m} | 0 | – | – | keep default |")
+    out.write_text("\n".join(lines) + "\n")
+    print(out)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+
+- [ ] **Step 2: Run it detached** — `nohup caffeinate -i .venv/bin/python scripts/measure_mos_lag.py > data/mos-lag.log 2>&1 &`. It needs no other task and can run while Tasks 1–3 are built.
+- [ ] **Step 3: Apply** — when the report exists, set each `PUB_LAG_H[model]` in `src/citycast/features.py` to the report's proposed value (observed max + 0.5 h; 15-min polling means first-seen can be up to 15 min late, which only makes the lag more conservative). A model with no observed runs keeps its default. Rebuild the datasets (Task 3) if they were built with the defaults.
 
 ---
 
@@ -184,9 +270,9 @@ T_PRE = datetime(2024, 1, 4, 23, 0, tzinfo=timezone.utc)      # 18:00 EST on D-1
 T_SAME = datetime(2024, 1, 5, 19, 0, tzinfo=timezone.utc)     # 14:00 EST on D
 
 
-def _mos(model, runtime, value):
+def _mos(model, runtime, value, n_points=1):
     return {"station": "KNYC", "model": model, "runtime_utc": runtime, "target_date": D.isoformat(),
-            "metric": "high", "value_f": value, "n_points": 1, "fetched_at": F}
+            "metric": "high", "value_f": value, "n_points": n_points, "fetched_at": F}
 
 
 def _obs(valid, tmpf, six_max_c=None):
@@ -200,7 +286,7 @@ def _seed(c):
     with c:
         db.upsert(c, "cli_daily", clim)
         db.upsert(c, "mos_runs", [_mos("MEX", "2024-01-04T12:00:00+00:00", 44.0),
-                                  _mos("NBS", "2024-01-04T13:00:00+00:00", 46.0)])
+                                  _mos("NBS", "2024-01-04T13:00:00+00:00", 46.0, n_points=8)])
         db.upsert(c, "obs", [_obs("2024-01-05T14:51:00+00:00", 41.0),
                              _obs("2024-01-05T17:51:00+00:00", 45.0, six_max_c=7.8)])
 
@@ -220,6 +306,24 @@ def test_pre_day_row(tmp_path):
         assert r["age_MEX"] == 11.0
         assert math.isnan(r["run_ext"]) and r["lead_h"] == 30.0
         assert r["clim_mean"] > 0 and r["local_hour"] == 18
+
+
+def test_partial_nbs_run_is_a_feature_but_not_the_anchor(tmp_path):
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c)
+        with c:   # a later NBS run that covers only 2 points of the day
+            db.upsert(c, "mos_runs", [_mos("NBS", "2024-01-04T19:00:00+00:00", 40.0, n_points=2)])
+        r = _ctx(c, tmp_path).row("KNYC", "high", D, datetime(2024, 1, 5, 2, 0, tzinfo=timezone.utc))
+        assert r["f_NBS"] == 40.0 and r["npts_NBS"] == 2.0      # newest published run is reported
+        assert r["anchor"] == 44.0                                # ...but only full-coverage runs anchor
+
+
+def test_publication_lag_is_per_model(tmp_path):
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c)
+        # 16:30Z: NBS (13Z + 3 h) is published, MEX (12Z + 5 h = 17Z) is not
+        r = _ctx(c, tmp_path).row("KNYC", "high", D, datetime(2024, 1, 4, 16, 30, tzinfo=timezone.utc))
+        assert r["f_NBS"] == 46.0 and math.isnan(r["f_MEX"]) and r["anchor"] == 46.0
 
 
 def test_same_day_row_uses_visible_running_extremum(tmp_path):
@@ -289,12 +393,16 @@ from highcast.latentmax import visible_running_extremum
 from highcast.timeutil import climate_day_bounds
 
 MOS_MODELS = ("MEX", "GFS", "NBS", "NBE")
-PUB_LAG = timedelta(hours=1)
+# Publication lag per model (spec §3.3, revised 2026-10-08): conservative defaults until Task 0
+# measures first-seen times on IEM; a too-short lag leaks unpublished forecasts into training.
+PUB_LAG_H = {"GFS": 5.0, "MEX": 5.0, "NBS": 3.0, "NBE": 3.0}
+FULL_DAY_MIN_PTS = 6    # an NBS/NBE run counts toward the anchor only if it covers >= 18 h of the day
 CLIM_WINDOW_D = 7
 CLIM_MIN_N = 10
 NAN = float("nan")
 
 FEATURE_COLS = [*(f"f_{m}" for m in MOS_MODELS), *(f"age_{m}" for m in MOS_MODELS),
+                *(f"npts_{m}" for m in MOS_MODELS),
                 "anchor", "spread_mos", "clim_mean", "clim_sd", "prev_obs", "run_ext", "run_gap",
                 "last_tmpf", "last_dwpf", "doy_sin", "doy_cos", "lead_h", "local_hour",
                 "lat", "lon", "elevation_m"]
@@ -309,12 +417,12 @@ class FeatureContext:
         self.conn, self.stations = conn, stations
         self.cfg = {i: app_config(s, db_path) for i, s in stations.items()}
         self._mos: dict[tuple, tuple[list[str], list[float]]] = {}
-        sql = ("SELECT station, model, metric, target_date, runtime_utc, value_f FROM mos_runs "
+        sql = ("SELECT station, model, metric, target_date, runtime_utc, value_f, n_points FROM mos_runs "
                + ("WHERE target_date >= ? " if mos_since else "") + "ORDER BY runtime_utc")
         for r in conn.execute(sql, (mos_since.isoformat(),) if mos_since else ()):
             rts, vals = self._mos.setdefault((r[0], r[1], r[2], r[3]), ([], []))
             rts.append(r[4])
-            vals.append(float(r[5]))
+            vals.append((float(r[5]), int(r[6])))
         self._cli: dict[tuple[str, str], tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
         self._truth: dict[tuple[str, str, str], float] = {}
         for icao in stations:
@@ -332,15 +440,17 @@ class FeatureContext:
     def truth(self, icao: str, metric: str, day: date) -> float:
         return self._truth.get((icao, metric, day.isoformat()), NAN)
 
-    def mos(self, icao, model, metric, day: date, t: datetime) -> tuple[float, float]:
+    def mos(self, icao, model, metric, day: date, t: datetime) -> tuple[float, float, float]:
+        """(value, age_h, n_points) of the latest run published by t; NaNs when none."""
         found = self._mos.get((icao, model, metric, day.isoformat()))
         if not found:
             return NAN, NAN
         rts, vals = found
-        i = bisect.bisect_right(rts, (t - PUB_LAG).isoformat()) - 1
+        i = bisect.bisect_right(rts, (t - timedelta(hours=PUB_LAG_H[model])).isoformat()) - 1
         if i < 0:
             return NAN, NAN
-        return vals[i], (t - datetime.fromisoformat(rts[i])).total_seconds() / 3600
+        value, npts = vals[i]
+        return value, (t - datetime.fromisoformat(rts[i])).total_seconds() / 3600, float(npts)
 
     def clim(self, icao, metric, day: date) -> tuple[float, float]:
         key = (icao, metric, day)
@@ -375,14 +485,19 @@ class FeatureContext:
         r: dict = {"station": icao, "metric": metric, "event_date": day.isoformat(),
                    "asof_utc": t.isoformat()}
         for m in MOS_MODELS:
-            r[f"f_{m}"], r[f"age_{m}"] = self.mos(icao, m, metric, day, t)
-        pair = [r[f"f_{m}"] for m in ("NBS", "MEX") if not _isnan(r[f"f_{m}"])]
+            r[f"f_{m}"], r[f"age_{m}"], r[f"npts_{m}"] = self.mos(icao, m, metric, day, t)
+
+        def full(m):   # MEX/GFS carry one n_x value; NBS/NBE must cover most of the day
+            v = r[f"f_{m}"]
+            ok = m in ("MEX", "GFS") or (not _isnan(r[f"npts_{m}"]) and r[f"npts_{m}"] >= FULL_DAY_MIN_PTS)
+            return v if ok and not _isnan(v) else NAN
+        pair = [full(m) for m in ("NBS", "MEX") if not _isnan(full(m))]
         if pair:
             anchor = float(np.mean(pair))
-        elif not _isnan(r["f_GFS"]):
-            anchor = r["f_GFS"]
+        elif not _isnan(full("GFS")):
+            anchor = full("GFS")
         else:
-            anchor = r["f_NBE"]
+            anchor = full("NBE")
         if _isnan(anchor):
             return None
         avail = [r[f"f_{m}"] for m in MOS_MODELS if not _isnan(r[f"f_{m}"])]
@@ -441,8 +556,9 @@ def test_build_one_day_has_grid_rows_and_truth(tmp_path, monkeypatch):
                                         "fetched_at": "x"}])
         ctx = FeatureContext(c, {"KNYC": NYC}, tmp_path / "h.db")
         df = dataset.build(ctx, "high", date(2024, 1, 5), date(2024, 1, 5), progress=lambda m: None)
-        # 14 grid points; MEX (12Z Jan 4) is usable from 13Z, so only 06:00 EST D-1 (11Z) has no anchor
-        assert len(df) == 13 and set(FEATURE_COLS) <= set(df.columns)
+        # 14 grid points; NBS (13Z Jan 4, 3 h lag) is usable from 16Z and MEX (12Z, 5 h lag) from 17Z,
+        # so 06:00 and 09:00 EST on D-1 (11Z, 14Z) have no anchor
+        assert len(df) == 12 and set(FEATURE_COLS) <= set(df.columns)
         assert (df["y"] == 47.0).all() and df["asof_utc"].is_monotonic_increasing
         monkeypatch.setattr(dataset, "DATASET_DIR", tmp_path / "ds")
         dataset.save(df, "high")
@@ -945,7 +1061,7 @@ def run(conn, df: pd.DataFrame, metric: str, stations: tuple[str, ...], now_iso,
 
 **Interfaces:**
 - Consumes: `rps`, `brier`, `cluster_bootstrap`, `highcast.buckets.pmf_mass`.
-- Produces: `SELECTION_END = "2026-04-01"`, `MARKET_STALE_H = 2`; `scored(conn, metric) -> pd.DataFrame` (one row per wf prediction with truth: columns `station, metric, event_date, asof_utc, variant, rps, pmf`); `select_and_gate(conn, metric, now_iso) -> list[dict]` (writes `model_choice`); `market_brier(conn, metric) -> dict[str, tuple[float, float, float, int]]` (station → (mean model−market Brier, CI lo, CI hi, n contracts), chosen variant, report period and selection period combined but reported by period in the report); `write_report(conn, path: Path) -> Path`.
+- Produces: `SELECTION_END = "2026-04-01"`, `MARKET_STALE_H = 2`; `canonical_events(conn) -> set[str]` (one event per station/metric/date: most markets, ties → smallest ticker; plan 3 imports it); `scored(conn, metric) -> pd.DataFrame` (one row per wf prediction with truth: columns `station, metric, event_date, asof_utc, variant, rps, pmf`); `select_and_gate(conn, metric, now_iso) -> list[dict]` (writes `model_choice`); `market_brier(conn, metric) -> dict[str, tuple[float, float, float, int]]` (station → (mean model−market Brier, CI lo, CI hi, n contracts), chosen variant, report period and selection period combined but reported by period in the report); `write_report(conn, path: Path) -> Path`.
 
 Selection: for each station, compare `shared` vs `city` mean RPS on rows (same `event_date, asof_utc`) present for both in the selection period; ties → `shared`; a station with no `city` rows → `shared`. Gate: per row diff = chosen RPS − mosnorm RPS on common keys in the selection period, clustered by `event_date`; `gate_pass = ci_hi < 0`.
 
@@ -991,6 +1107,19 @@ def test_selects_better_variant_and_passes_gate(tmp_path):
         assert out[0]["variant"] == "city" and out[0]["gate_pass"] == 1
         row = c.execute("SELECT variant, gate_pass FROM model_choice WHERE station='KNYC'").fetchone()
         assert tuple(row) == ("city", 1)
+
+
+def test_canonical_events_picks_one_event_per_city_day(tmp_path):
+    from citycast.evaluate import canonical_events
+    base = {"series": "KXHIGHCHI", "station": "KMDW", "metric": "high", "event_date": "2024-02-28",
+            "lo": 1, "hi": 2, "open_time": None, "close_time": "2024-02-29T05:59:00+00:00",
+            "result": "no", "expiration_value": "", "raw": "{}"}
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        with c:
+            db.upsert(c, "kalshi_markets", [{**base, "ticker": "A1", "event_ticker": "EV-B"},
+                                            {**base, "ticker": "A2", "event_ticker": "EV-B"},
+                                            {**base, "ticker": "B1", "event_ticker": "EV-A"}])
+        assert canonical_events(c) == {"EV-B"}                   # more markets wins
 
 
 def test_market_brier_uses_fresh_candle_only(tmp_path):
@@ -1086,6 +1215,19 @@ def select_and_gate(conn, metric: str, now_iso) -> list[dict]:
     return out
 
 
+def canonical_events(conn) -> set[str]:
+    """One event per (station, metric, event_date): most markets, ties -> smallest event_ticker.
+    (The 2a archive has KMDW 2024-02-28 listed under two events; spec §4.1.)"""
+    best: dict[tuple, tuple[int, str]] = {}
+    for st, metric, d, ev, n in conn.execute(
+            "SELECT station, metric, event_date, event_ticker, COUNT(*) FROM kalshi_markets "
+            "GROUP BY station, metric, event_date, event_ticker"):
+        key = (st, metric, d)
+        if key not in best or (-n, ev) < (-best[key][0], best[key][1]):
+            best[key] = (n, ev)
+    return {ev for _, ev in best.values()}
+
+
 def market_brier(conn, metric: str, period: str | None = None) -> dict:
     """period None = all dates; 'selection' = before SELECTION_END; 'report' = on/after."""
     choice = {s: v for s, v in conn.execute("SELECT station, variant FROM model_choice WHERE metric=?", (metric,))}
@@ -1095,11 +1237,14 @@ def market_brier(conn, metric: str, period: str | None = None) -> dict:
         df = df[df["event_date"] < SELECTION_END]
     elif period == "report":
         df = df[df["event_date"] >= SELECTION_END]
+    canon = canonical_events(conn)
     markets = conn.execute("SELECT ticker, event_ticker, station, event_date, lo, hi FROM kalshi_markets "
-                           "WHERE metric=? AND NOT (lo IS NULL AND hi IS NULL)", (metric,)).fetchall()
+                           "WHERE metric=? AND NOT (lo IS NULL AND hi IS NULL) AND result IN ('yes','no')",
+                           (metric,)).fetchall()
     by_event: dict[tuple[str, str], list] = {}
     for m in markets:
-        by_event.setdefault((m[2], m[3]), []).append(m)
+        if m[1] in canon:
+            by_event.setdefault((m[2], m[3]), []).append(m)
     diffs: dict[str, dict[str, list[float]]] = {}
     for r in df.itertuples(index=False):
         t = datetime.fromisoformat(r.asof_utc)
