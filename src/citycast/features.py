@@ -1,12 +1,12 @@
 # src/citycast/features.py
 """Feature rows for (station, metric, climate day, as-of instant) — spec §3.3.
 
-Everything here is strictly as-of t: MOS runs need runtime_utc <= t - 1 h, climatology uses
+Everything here is strictly as-of t: MOS runs need runtime_utc <= t - PUB_LAG_H[model], climatology uses
 only years before the target's year, observations go through latentmax with asof_utc=t.
 """
 import bisect
 import math
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -40,10 +40,12 @@ class FeatureContext:
     def __init__(self, conn, stations: dict, db_path, mos_since: date | None = None):
         self.conn, self.stations = conn, stations
         self.cfg = {i: app_config(s, db_path) for i, s in stations.items()}
-        self._mos: dict[tuple, tuple[list[str], list[float]]] = {}
+        self._mos: dict[tuple, tuple[list[str], list[tuple[float, int]]]] = {}
         sql = ("SELECT station, model, metric, target_date, runtime_utc, value_f, n_points FROM mos_runs "
                + ("WHERE target_date >= ? " if mos_since else "") + "ORDER BY runtime_utc")
         for r in conn.execute(sql, (mos_since.isoformat(),) if mos_since else ()):
+            if r[5] is None:
+                continue
             rts, vals = self._mos.setdefault((r[0], r[1], r[2], r[3]), ([], []))
             rts.append(r[4])
             vals.append((float(r[5]), int(r[6])))
@@ -76,6 +78,21 @@ class FeatureContext:
         value, npts = vals[i]
         return value, (t - datetime.fromisoformat(rts[i])).total_seconds() / 3600, float(npts)
 
+    def mos_full(self, icao, model, metric, day: date, t: datetime) -> float:
+        """Value of the latest published run that covers the day (MEX/GFS always; NBS/NBE need
+        n_points >= FULL_DAY_MIN_PTS); NaN when none."""
+        found = self._mos.get((icao, model, metric, day.isoformat()))
+        if not found:
+            return NAN
+        rts, vals = found
+        i = bisect.bisect_right(rts, (t - timedelta(hours=PUB_LAG_H[model])).isoformat()) - 1
+        while i >= 0:
+            value, npts = vals[i]
+            if model in ("MEX", "GFS") or npts >= FULL_DAY_MIN_PTS:
+                return value
+            i -= 1
+        return NAN
+
     def clim(self, icao, metric, day: date) -> tuple[float, float]:
         key = (icao, metric, day)
         if key not in self._clim_cache:
@@ -97,7 +114,7 @@ class FeatureContext:
 
     def last_obs(self, icao, day: date, t: datetime) -> tuple[float, float]:
         start = climate_day_bounds(day, self.stations[icao].std_utc_offset)[0]
-        r = self.conn.execute("SELECT tmpf, dwpf FROM obs WHERE station=? AND valid_utc<=? "
+        r = self.conn.execute("SELECT COALESCE(tmpf_precise, tmpf), dwpf FROM obs WHERE station=? AND valid_utc<? "
                               "AND valid_utc>=? AND tmpf IS NOT NULL ORDER BY valid_utc DESC LIMIT 1",
                               (icao, t.isoformat(), start.isoformat())).fetchone()
         if r is None:
@@ -105,26 +122,22 @@ class FeatureContext:
         return float(r[0]), (NAN if r[1] is None else float(r[1]))
 
     def row(self, icao: str, metric: str, day: date, t: datetime) -> dict | None:
+        t = t.astimezone(timezone.utc)
         st = self.stations[icao]
         r: dict = {"station": icao, "metric": metric, "event_date": day.isoformat(),
                    "asof_utc": t.isoformat()}
         for m in MOS_MODELS:
             r[f"f_{m}"], r[f"age_{m}"], r[f"npts_{m}"] = self.mos(icao, m, metric, day, t)
 
-        def full(m):   # MEX/GFS carry one n_x value; NBS/NBE must cover most of the day
-            v = r[f"f_{m}"]
-            ok = m in ("MEX", "GFS") or (not _isnan(r[f"npts_{m}"]) and r[f"npts_{m}"] >= FULL_DAY_MIN_PTS)
-            return v if ok and not _isnan(v) else NAN
-        pair = [full(m) for m in ("NBS", "MEX") if not _isnan(full(m))]
+        full = {m: self.mos_full(icao, m, metric, day, t) for m in ("MEX", "GFS", "NBS")}
+        pair = [full[m] for m in ("NBS", "MEX") if not _isnan(full[m])]
         if pair:
             anchor = float(np.mean(pair))
-        elif not _isnan(full("GFS")):
-            anchor = full("GFS")
+        elif not _isnan(full["GFS"]):
+            anchor = full["GFS"]
         else:
-            anchor = full("NBE")
-        if _isnan(anchor):
             return None
-        avail = [r[f"f_{m}"] for m in MOS_MODELS if not _isnan(r[f"f_{m}"])]
+        avail = [v for v in full.values() if not _isnan(v)]
         r["anchor"], r["spread_mos"] = anchor, float(max(avail) - min(avail))
         r["clim_mean"], r["clim_sd"] = self.clim(icao, metric, day)
         r["prev_obs"] = self.bound(icao, metric, day - timedelta(days=1), t)
