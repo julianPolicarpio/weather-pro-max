@@ -30,6 +30,16 @@ CREATE TABLE IF NOT EXISTS kalshi_candles (ticker TEXT, end_utc TEXT, yes_bid RE
   volume REAL, open_interest REAL, PRIMARY KEY (ticker, end_utc));
 CREATE TABLE IF NOT EXISTS backfill_log (source TEXT, key TEXT, done_at TEXT NOT NULL,
   rows INTEGER NOT NULL, PRIMARY KEY (source, key));
+CREATE TABLE IF NOT EXISTS wf_predictions (station TEXT, metric TEXT, event_date TEXT, asof_utc TEXT,
+  variant TEXT, fold TEXT, anchor REAL, run_ext REAL, quantiles_json TEXT NOT NULL,
+  pmf_json TEXT NOT NULL, k REAL NOT NULL, created_at TEXT NOT NULL,
+  PRIMARY KEY (station, metric, event_date, asof_utc, variant));
+CREATE TABLE IF NOT EXISTS model_choice (station TEXT, metric TEXT, variant TEXT NOT NULL,
+  crps_sel REAL, mos_crps_sel REAL, gate_ci_hi REAL, gate_pass INTEGER NOT NULL,
+  decided_at TEXT NOT NULL, PRIMARY KEY (station, metric));
+CREATE TABLE IF NOT EXISTS live_predictions (station TEXT, metric TEXT, event_date TEXT,
+  issued_utc TEXT, variant TEXT NOT NULL, anchor REAL, run_ext REAL, quantiles_json TEXT NOT NULL,
+  pmf_json TEXT NOT NULL, k REAL NOT NULL, PRIMARY KEY (station, metric, event_date, issued_utc));
 """
 
 
