@@ -20,7 +20,8 @@
 - As-of grid: local hours 06, 09, 12, 15, 18, 21 on D−1 and 00, 03, …, 21 on D; drop points at or after the climate-day end.
 - Quantiles Q = (0.02, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 0.98). LightGBM params: `num_leaves=31, learning_rate=0.05, n_estimators=400, min_child_samples=40, subsample=0.8, subsample_freq=1, colsample_bytree=0.8`. Recency half-life 730 days.
 - Spread factor k grid {0.6, 0.7, …, 1.6}, chosen on previous folds only; k = 1.0 until 180 days of prior predictions exist.
-- Walk-forward: quarterly refits from 2022-Q3; training data from 2022-01-01. Selection period = event dates before 2026-04-01; report period = on/after. Gate: chosen-variant minus mosnorm CRPS, cluster bootstrap by event date (2,000 resamples, seed 0), 95 % CI upper bound < 0.
+- Walk-forward: quarterly refits from 2022-Q3; training data from 2022-01-01. Selection period = event dates before 2026-04-01; report period = on/after. Gate (both must hold, spec §3.8 revised 2026-10-09): (1) selection period: chosen-variant minus mosnorm CRPS, cluster bootstrap by event date (2,000 resamples, seed 0), 95 % CI upper bound < 0; (2) report period: the same difference has mean < 0 over ≥ 60 distinct event dates (`REPORT_MIN_DAYS = 60`). Report-period numbers never choose the variant or k.
+- Design freeze: every evaluate run logs `code_fingerprint()` (sha256 of `asof, features, dataset, qmodel, walkforward, evaluate` sources) in `eval_log`; a report produced under a fingerprint different from the first run that scored the report period carries a warning that the report period is spent. Real data is not evaluated before `PUB_LAG_H` is set from the Task 0 report.
 - mosnorm baseline = Normal(f_MEX, σ = 3.0 °F), same as the sandbox `mos` bot.
 - Paper only. The `citycast` sandbox account follows the existing unlock rule unchanged.
 
@@ -1057,13 +1058,25 @@ def run(conn, df: pd.DataFrame, metric: str, stations: tuple[str, ...], now_iso,
 
 **Files:**
 - Create: `src/citycast/evaluate.py`
+- Modify: `src/citycast/db.py` (`model_choice` columns; new `eval_log` table — no live DB has `model_choice` yet, checked 2026-10-09, so the CREATE statement is edited in place)
 - Test: `tests/test_citycast_evaluate.py`
 
 **Interfaces:**
 - Consumes: `rps`, `brier`, `cluster_bootstrap`, `highcast.buckets.pmf_mass`.
-- Produces: `SELECTION_END = "2026-04-01"`, `MARKET_STALE_H = 2`; `canonical_events(conn) -> set[str]` (one event per station/metric/date: most markets, ties → smallest ticker; plan 3 imports it); `scored(conn, metric) -> pd.DataFrame` (one row per wf prediction with truth: columns `station, metric, event_date, asof_utc, variant, rps, pmf`); `select_and_gate(conn, metric, now_iso) -> list[dict]` (writes `model_choice`); `market_brier(conn, metric) -> dict[str, tuple[float, float, float, int]]` (station → (mean model−market Brier, CI lo, CI hi, n contracts), chosen variant, report period and selection period combined but reported by period in the report); `write_report(conn, path: Path) -> Path`.
+- Produces: `SELECTION_END = "2026-04-01"`, `MARKET_STALE_H = 2`, `REPORT_MIN_DAYS = 60`; `code_fingerprint() -> str`; `canonical_events(conn) -> set[str]` (one event per station/metric/date: most markets, ties → smallest ticker; plan 3 imports it); `scored(conn, metric) -> pd.DataFrame` (one row per wf prediction with truth: columns `station, metric, event_date, asof_utc, variant, rps, pmf`); `select_and_gate(conn, metric, now_iso) -> list[dict]` (writes `model_choice`); `market_brier(conn, metric) -> dict[str, tuple[float, float, float, int]]` (station → (mean model−market Brier, CI lo, CI hi, n contracts), chosen variant, report period and selection period combined but reported by period in the report); `write_report(conn, path: Path) -> Path`.
 
-Selection: for each station, compare `shared` vs `city` mean RPS on rows (same `event_date, asof_utc`) present for both in the selection period; ties → `shared`; a station with no `city` rows → `shared`. Gate: per row diff = chosen RPS − mosnorm RPS on common keys in the selection period, clustered by `event_date`; `gate_pass = ci_hi < 0`.
+Selection: for each station, compare `shared` vs `city` mean RPS on rows (same `event_date, asof_utc`) present for both in the selection period; ties → `shared`; a station with no `city` rows → `shared`. Gate: per row diff = chosen RPS − mosnorm RPS on common keys in the selection period, clustered by `event_date`; `sel_pass = ci_hi < 0`. Report confirmation: the same paired diff on report-period rows; `rep_days` = distinct event dates; `gate_pass = sel_pass and rep_days >= REPORT_MIN_DAYS and mean diff < 0`. Each `select_and_gate` call also writes one `eval_log` row `(run_at, metric, fingerprint, report_scored)` where `report_scored = 1` if any report-period paired rows existed.
+
+Schema (replace the `model_choice` statement in `db.SCHEMA` and add `eval_log`):
+
+```sql
+CREATE TABLE IF NOT EXISTS model_choice (station TEXT, metric TEXT, variant TEXT NOT NULL,
+  crps_sel REAL, mos_crps_sel REAL, gate_ci_hi REAL, sel_pass INTEGER NOT NULL,
+  crps_rep REAL, mos_crps_rep REAL, rep_days INTEGER NOT NULL, gate_pass INTEGER NOT NULL,
+  decided_at TEXT NOT NULL, PRIMARY KEY (station, metric));
+CREATE TABLE IF NOT EXISTS eval_log (run_at TEXT, metric TEXT, fingerprint TEXT NOT NULL,
+  report_scored INTEGER NOT NULL, PRIMARY KEY (run_at, metric));
+```
 
 Market Brier: for each chosen-variant prediction and each usable market of that event (`kalshi_markets` with matching station, metric, event_date), take the newest candle with `end_utc` in `(asof − 2 h, asof]` having both `yes_bid` and `yes_ask`; model p = `pmf_mass(pmf, lo, hi)`; market p = mid; won = truth in [lo, hi]; diff = brier(model) − brier(market), clustered by `event_ticker`.
 
@@ -1086,15 +1099,19 @@ def _pred(variant, d, pmf, asof="12:00"):
             "pmf_json": json.dumps(pmf), "k": 1.0, "created_at": F}
 
 
-def _seed(c, good="city"):
+def _seed(c, good="city", rep_days=60, rep_good=True):
+    """60 selection-period days where `good` beats everything, then `rep_days` report-period days
+    where the chosen variant beats mosnorm (rep_good) or loses to it."""
     preds, cli = [], []
-    for i in range(60):
-        d = f"2025-0{1 + i // 28}-{1 + i % 28:02d}"
+    days = [(f"2025-0{1 + i // 28}-{1 + i % 28:02d}", True) for i in range(60)]
+    days += [(f"2026-0{4 + i // 28}-{1 + i % 28:02d}", rep_good) for i in range(rep_days)]
+    for d, wins in days:
         cli.append({"station": "KNYC", "date": d, "high_f": 50, "low_f": 30, "final": 1,
                     "issued_utc": None, "raw": "{}", "fetched_at": F})
-        preds += [_pred(good, d, {50: 0.9, 51: 0.1}),
+        sharp, wide = {50: 0.9, 51: 0.1}, {47: 0.5, 53: 0.5}
+        preds += [_pred(good, d, sharp if wins else wide),
                   _pred("shared" if good == "city" else "city", d, {49: 0.5, 51: 0.5}),
-                  _pred("mosnorm", d, {47: 0.5, 53: 0.5})]
+                  _pred("mosnorm", d, wide if wins else sharp)]
     with c:
         db.upsert(c, "cli_daily", cli)
         db.upsert(c, "wf_predictions", preds)
@@ -1107,6 +1124,53 @@ def test_selects_better_variant_and_passes_gate(tmp_path):
         assert out[0]["variant"] == "city" and out[0]["gate_pass"] == 1
         row = c.execute("SELECT variant, gate_pass FROM model_choice WHERE station='KNYC'").fetchone()
         assert tuple(row) == ("city", 1)
+        log = c.execute("SELECT metric, report_scored FROM eval_log").fetchall()
+        assert [tuple(r) for r in log] == [("high", 1)]
+
+
+def test_gate_fails_when_model_loses_in_report_period(tmp_path):
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c, good="city", rep_good=False)
+        out = select_and_gate(c, "high", lambda: F)
+        assert out[0]["sel_pass"] == 1 and out[0]["gate_pass"] == 0
+        assert out[0]["crps_rep"] > out[0]["mos_crps_rep"]
+
+
+def test_gate_fails_with_too_few_report_days(tmp_path):
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c, good="city", rep_days=59)
+        out = select_and_gate(c, "high", lambda: F)
+        assert out[0]["sel_pass"] == 1 and out[0]["rep_days"] == 59 and out[0]["gate_pass"] == 0
+
+
+def test_variant_choice_ignores_report_period(tmp_path):
+    # city wins the selection period; in the report period shared is far better than city.
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c, good="city", rep_days=0)
+        rows = []
+        for i in range(60):
+            d = f"2026-0{4 + i // 28}-{1 + i % 28:02d}"
+            rows += [_pred("city", d, {40: 1.0}), _pred("shared", d, {50: 1.0}), _pred("mosnorm", d, {45: 1.0})]
+        with c:
+            db.upsert(c, "cli_daily", [{"station": "KNYC", "date": r["event_date"], "high_f": 50, "low_f": 30,
+                                        "final": 1, "issued_utc": None, "raw": "{}", "fetched_at": F}
+                                       for r in rows[::3]])
+            db.upsert(c, "wf_predictions", rows)
+        out = select_and_gate(c, "high", lambda: F)
+        assert out[0]["variant"] == "city"                      # chosen on selection only
+        assert out[0]["gate_pass"] == 0                         # and then fails confirmation
+
+
+def test_report_warns_when_code_changed_after_report_was_scored(tmp_path):
+    from citycast.evaluate import code_fingerprint, write_report
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c, good="city")
+        select_and_gate(c, "high", lambda: F)
+        assert "WARNING" not in write_report(c, tmp_path / "r.md").read_text()
+        with c:
+            c.execute("UPDATE eval_log SET fingerprint='0000'")       # first scoring ran on other code
+        assert "WARNING" in write_report(c, tmp_path / "r.md").read_text()
+        assert len(code_fingerprint()) == 64
 
 
 def test_canonical_events_picks_one_event_per_city_day(tmp_path):
@@ -1150,6 +1214,7 @@ def test_market_brier_uses_fresh_candle_only(tmp_path):
 ```python
 # src/citycast/evaluate.py
 """Selection, gate and market comparison (spec §3.8)."""
+import hashlib
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -1161,6 +1226,18 @@ from highcast.buckets import pmf_mass
 
 SELECTION_END = "2026-04-01"
 MARKET_STALE_H = 2
+REPORT_MIN_DAYS = 60
+FINGERPRINT_MODULES = ("asof", "features", "dataset", "qmodel", "walkforward", "evaluate")
+
+
+def code_fingerprint() -> str:
+    """sha256 over the modelling code, so a report can tell whether the report period was first
+    scored under different code (spec §3.8 design freeze)."""
+    h = hashlib.sha256()
+    for name in FINGERPRINT_MODULES:
+        h.update(name.encode())
+        h.update((Path(__file__).parent / f"{name}.py").read_bytes())
+    return h.hexdigest()
 
 
 def _truth(conn, metric) -> dict:
@@ -1193,7 +1270,8 @@ def _paired(df: pd.DataFrame, a: str, b: str) -> pd.DataFrame:
 def select_and_gate(conn, metric: str, now_iso) -> list[dict]:
     df = scored(conn, metric)
     sel = df[df["event_date"] < SELECTION_END]
-    out = []
+    rep = df[df["event_date"] >= SELECTION_END]
+    out, report_scored = [], 0
     for station in sorted(sel["station"].unique()):
         s = sel[sel["station"] == station]
         both = _paired(s, "city", "shared")
@@ -1205,13 +1283,24 @@ def select_and_gate(conn, metric: str, now_iso) -> list[dict]:
         for r in gate.itertuples(index=False):
             by_day.setdefault(r.event_date, []).append(r.a - r.b)
         _, _, ci_hi = cluster_bootstrap(by_day)
+        conf = _paired(rep[rep["station"] == station], variant, "mosnorm")   # report period: confirm only
+        rep_days = int(conf["event_date"].nunique())
+        report_scored |= rep_days > 0
+        sel_pass = ci_hi < 0
+        rep_ok = rep_days >= REPORT_MIN_DAYS and float((conf["a"] - conf["b"]).mean()) < 0
         row = {"station": station, "metric": metric, "variant": variant,
                "crps_sel": float(gate["a"].mean()), "mos_crps_sel": float(gate["b"].mean()),
-               "gate_ci_hi": ci_hi, "gate_pass": int(ci_hi < 0), "decided_at": now_iso()}
+               "gate_ci_hi": ci_hi, "sel_pass": int(sel_pass),
+               "crps_rep": float(conf["a"].mean()) if rep_days else None,
+               "mos_crps_rep": float(conf["b"].mean()) if rep_days else None,
+               "rep_days": rep_days, "gate_pass": int(sel_pass and rep_ok), "decided_at": now_iso()}
         out.append(row)
     with conn:
         conn.executemany("INSERT OR REPLACE INTO model_choice VALUES (:station,:metric,:variant,:crps_sel,"
-                         ":mos_crps_sel,:gate_ci_hi,:gate_pass,:decided_at)", out)
+                         ":mos_crps_sel,:gate_ci_hi,:sel_pass,:crps_rep,:mos_crps_rep,:rep_days,:gate_pass,"
+                         ":decided_at)", out)
+        conn.execute("INSERT OR REPLACE INTO eval_log VALUES (?,?,?,?)",
+                     (now_iso(), metric, code_fingerprint(), int(report_scored)))
     return out
 
 
@@ -1267,30 +1356,47 @@ def market_brier(conn, metric: str, period: str | None = None) -> dict:
     return out
 
 
+def _freeze_warning(conn) -> list[str]:
+    first = conn.execute("SELECT run_at, fingerprint FROM eval_log WHERE report_scored=1 "
+                         "ORDER BY run_at LIMIT 1").fetchone()
+    if first is None or first[1] == code_fingerprint():
+        return []
+    return [f"> **WARNING:** the report period was first scored on {first[0]} under different modelling "
+            "code. It is no longer an untouched test; only the sandbox forward test counts.", ""]
+
+
 def write_report(conn, path: Path) -> Path:
-    lines = ["# citycast evaluation", "",
+    lines = ["# citycast evaluation", "", *_freeze_warning(conn),
              f"Selection period: event dates before {SELECTION_END}. Report period: on/after. "
-             "RPS = discrete CRPS (lower is better). Market Brier diff < 0 means the model beat the market mid.", ""]
+             "RPS = discrete CRPS (lower is better). Gate = selection CI hi < 0 AND report-period mean "
+             f"below mosnorm over >= {REPORT_MIN_DAYS} days. "
+             "Market Brier diff < 0 means the model beat the market mid.", ""]
     for metric in ("high", "low"):
         lines += [f"## {metric}", "",
-                  "| station | variant | RPS (sel) | mosnorm RPS (sel) | gate CI hi | gate | "
-                  "market Δ sel [CI] (n) | market Δ report [CI] (n) |", "|---|---|---|---|---|---|---|---|"]
+                  "| station | variant | RPS (sel) | mosnorm RPS (sel) | gate CI hi | RPS (rep) | "
+                  "mosnorm RPS (rep) | rep days | gate | market Δ sel [CI] (n) | market Δ report [CI] (n) |",
+                  "|---|---|---|---|---|---|---|---|---|---|---|"]
         sel_m, rep_m = market_brier(conn, metric, "selection"), market_brier(conn, metric, "report")
-        for row in conn.execute("SELECT station, variant, crps_sel, mos_crps_sel, gate_ci_hi, gate_pass "
-                                "FROM model_choice WHERE metric=? ORDER BY station", (metric,)):
+        for row in conn.execute("SELECT station, variant, crps_sel, mos_crps_sel, gate_ci_hi, crps_rep, "
+                                "mos_crps_rep, rep_days, sel_pass, gate_pass FROM model_choice WHERE metric=? "
+                                "ORDER BY station", (metric,)):
             def fmt(x):
                 return f"{x[0]:+.4f} [{x[1]:+.4f}, {x[2]:+.4f}] ({x[3]})" if x else "no prices"
+            def num(x):
+                return "—" if x is None else f"{x:.3f}"
+            verdict = "PASS" if row[9] else ("fail (report)" if row[8] else "fail")
             lines.append(f"| {row[0]} | {row[1]} | {row[2]:.3f} | {row[3]:.3f} | {row[4]:+.3f} | "
-                         f"{'PASS' if row[5] else 'fail'} | {fmt(sel_m.get(row[0]))} | {fmt(rep_m.get(row[0]))} |")
+                         f"{num(row[5])} | {num(row[6])} | {row[7]} | {verdict} | "
+                         f"{fmt(sel_m.get(row[0]))} | {fmt(rep_m.get(row[0]))} |")
         lines.append("")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n")
     return path
 ```
 
-- [ ] **Step 4: Run to verify they pass** — 2 passed.
+- [ ] **Step 4: Run to verify they pass** — 7 passed.
 
-- [ ] **Step 5: Full suite** — all pass.
+- [ ] **Step 5: Full suite** — all pass (update `tests/test_citycast_asof.py` only if it asserts the exact table list; it checks a subset).
 
 ---
 
@@ -1326,7 +1432,7 @@ def test_train_then_predict_writes_live_rows_for_gated_station(tmp_path, monkeyp
     with closing(db.connect(tmp_path / "h.db")) as c:
         _seed(c)
         with c:
-            c.execute("INSERT INTO model_choice VALUES ('KNYC','high','shared',1.0,1.2,-0.1,1,'x')")
+            c.execute("INSERT INTO model_choice VALUES ('KNYC','high','shared',1.0,1.2,-0.1,1,1.0,1.2,90,1,'x')")
         df = _frame()
         path = live.train_final(c, df, "high", ("KLAX", "KNYC"), date(2023, 1, 1))
         assert path.exists()
@@ -1629,6 +1735,7 @@ Expected: all pass; the no-real-money import test still passes (citycast does no
 
 ### Task 10: Run it for real (controller task)
 
+- [ ] **Step 0: Freeze** — confirm `PUB_LAG_H` has been set from the Task 0 report (observed max + 0.5 h) and committed; after Step 3 the modelling code is frozen. Any later change to the fingerprinted modules spends the report period (the report will say so) and the sandbox becomes the only test.
 - [ ] **Step 1: Build datasets** — `.venv/bin/citycast dataset --metric high` and `--metric low` (background; record row counts and minutes).
 - [ ] **Step 2: Walk-forward** — `.venv/bin/citycast walkforward --metric high` and `--metric low` (background, hours). Record rows per variant.
 - [ ] **Step 3: Evaluate** — `.venv/bin/citycast evaluate`. Read `docs/reports/citycast-evaluation-<date>.md`; for each station/metric record variant, RPS vs mosnorm, gate result and market Brier per period. Report-period numbers are read, never used to change choices.
