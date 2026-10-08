@@ -140,12 +140,16 @@ NaN when none. **Publication lag per model** (`PUB_LAG_H`, revised 2026-10-08 af
 until measured, the conservative defaults GFS 5 h, MEX 5 h, NBS 3 h, NBE 3 h; 2b Task 0 measures
 first-seen times on IEM's archive for 24 h and may only replace a default with
 `max(observed max lag) + 0.5 h` (never shorter than observed). A lag that is too short leaks a
-forecast that was not yet published into training. `anchor` = mean of the available full-coverage
-values of f_NBS and f_MEX, else f_GFS, else a full-coverage f_NBE (rows with no anchor are
-dropped); an NBS/NBE value counts as full-coverage when `npts ≥ 6` (≥ 18 h of the climate day).
-Measured on the 2a archive: NBS/NBE daily max from 3-hourly points runs low (≈ −1.5 °F NBS,
-≈ −4.8 °F NBE) and ~357 k runs cover only part of a day; the residual model absorbs the bias and
-`npts_*` tells it how partial a run is. `spread_mos` = max − min of available f_*. Climatology
+forecast that was not yet published into training. **Anchor and spread use full-coverage runs only**
+(revised 2026-10-08 after the Task 2 review on real data): for MEX and GFS every run counts; for NBS
+a run counts when `npts ≥ 6` (≥ 18 h of the climate day), and the anchor uses the **latest published
+full-coverage run**, not the latest run (after local noon the newest NBS run is always partial, which
+made the anchor jump between bases). `anchor` = mean of full-coverage NBS and MEX, else MEX, else GFS
+(NBE never reaches 6 points in the archive, so it is a feature only, never an anchor; rows with no
+anchor are dropped). `spread_mos` = max − min over the full-coverage values. `f_*`, `age_*`, `npts_*`
+still report each model's latest published run, partial or not, so the model sees remaining-hours
+forecasts too. Measured on the 2a archive: NBS/NBE daily max from 3-hourly points runs low
+(≈ −1.5 °F NBS, ≈ −4.8 °F NBE). `spread_mos` = max − min of available f_*. Climatology
 `clim_mean`, `clim_sd` = mean/sd of CLI final values for s, m over ±7 days of D's day-of-year in
 **years before D's year** only. Persistence `prev_obs` = visible extreme of the previous climate day
 from `obs` with `asof_utc = t` (via `latentmax.visible_running_extremum`). Same-day (t ≥ climate

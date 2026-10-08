@@ -53,14 +53,49 @@ def test_pre_day_row(tmp_path):
         assert r["clim_mean"] > 0 and r["local_hour"] == 18
 
 
-def test_partial_nbs_run_is_a_feature_but_not_the_anchor(tmp_path):
+def test_partial_nbs_run_is_a_feature_but_anchor_uses_latest_full_run(tmp_path):
     with closing(db.connect(tmp_path / "h.db")) as c:
         _seed(c)
         with c:   # a later NBS run that covers only 2 points of the day
             db.upsert(c, "mos_runs", [_mos("NBS", "2024-01-04T19:00:00+00:00", 40.0, n_points=2)])
         r = _ctx(c, tmp_path).row("KNYC", "high", D, datetime(2024, 1, 5, 2, 0, tzinfo=timezone.utc))
         assert r["f_NBS"] == 40.0 and r["npts_NBS"] == 2.0      # newest published run is reported
-        assert r["anchor"] == 44.0                                # ...but only full-coverage runs anchor
+        assert r["anchor"] == 45.0                                # mean(full NBS 46, MEX 44)
+
+
+def test_nbe_only_day_has_no_anchor(tmp_path):
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        with c:
+            db.upsert(c, "mos_runs", [_mos("NBE", "2024-01-04T12:00:00+00:00", 44.0, n_points=8)])
+        assert _ctx(c, tmp_path).row("KNYC", "high", D, T_PRE) is None
+
+
+def test_spread_excludes_partial_runs(tmp_path):
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c)
+        with c:
+            db.upsert(c, "mos_runs", [_mos("NBS", "2024-01-04T19:00:00+00:00", 40.0, n_points=2)])
+        r = _ctx(c, tmp_path).row("KNYC", "high", D, datetime(2024, 1, 5, 2, 0, tzinfo=timezone.utc))
+        assert r["spread_mos"] == 2.0
+
+
+def test_non_utc_t_gives_identical_row(tmp_path):
+    from zoneinfo import ZoneInfo
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c)
+        ctx = _ctx(c, tmp_path)
+        a = ctx.row("KNYC", "high", D, T_SAME)
+        b = ctx.row("KNYC", "high", D, T_SAME.astimezone(ZoneInfo("America/New_York")))
+        assert a["asof_utc"] == b["asof_utc"]
+        assert all((math.isnan(a[k]) and math.isnan(b[k])) or a[k] == b[k] for k in FEATURE_COLS)
+
+
+def test_null_mos_value_is_skipped(tmp_path):
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c)
+        with c:
+            db.upsert(c, "mos_runs", [_mos("MEX", "2024-01-04T13:00:00+00:00", None)])
+        assert _ctx(c, tmp_path).row("KNYC", "high", D, T_PRE)["f_MEX"] == 44.0
 
 
 def test_publication_lag_is_per_model(tmp_path):
@@ -89,7 +124,7 @@ def test_leakage_future_data_changes_nothing(tmp_path):
         _seed(c)
         before = _ctx(c, tmp_path).row("KNYC", "high", D, T_SAME)
         with c:
-            # a MOS run 30 min before t (inside the 1 h publication lag), an obs after t,
+            # a MOS run 30 min before t (inside MEX's 5 h publication lag), an obs after t,
             # and a CLI report from the target's own year
             db.upsert(c, "mos_runs", [_mos("MEX", (T_SAME - timedelta(minutes=30)).isoformat(), 99.0)])
             db.upsert(c, "obs", [_obs("2024-01-05T20:51:00+00:00", 70.0, six_max_c=25.0)])
@@ -99,6 +134,51 @@ def test_leakage_future_data_changes_nothing(tmp_path):
         after = _ctx(c, tmp_path).row("KNYC", "high", D, T_SAME)
         same = lambda a, b: (math.isnan(a) and math.isnan(b)) or a == b   # noqa: E731
         assert all(same(before[k], after[k]) for k in FEATURE_COLS)
+
+
+def test_boundary_mex_exactly_at_lag_is_used(tmp_path):
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c)
+        with c:
+            db.upsert(c, "mos_runs", [_mos("MEX", (T_SAME - timedelta(hours=5)).isoformat(), 50.0)])
+        assert _ctx(c, tmp_path).row("KNYC", "high", D, T_SAME)["f_MEX"] == 50.0
+
+
+def test_boundary_nbs_just_inside_lag_is_not_used(tmp_path):
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c)
+        with c:
+            db.upsert(c, "mos_runs", [_mos("NBS", (T_SAME - timedelta(hours=2, minutes=59)).isoformat(),
+                                           99.0, n_points=8)])
+        r = _ctx(c, tmp_path).row("KNYC", "high", D, T_SAME)
+        assert r["f_NBS"] == 46.0
+
+
+def test_pre_day_row_and_prev_obs_ignore_post_t_data(tmp_path):
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c)
+        with c:   # an obs on D-1 (climate day ends 05:00Z Jan 5) before t
+            db.upsert(c, "obs", [_obs("2024-01-04T20:51:00+00:00", 30.0)])
+        before = _ctx(c, tmp_path).row("KNYC", "high", D, T_PRE)
+        assert not math.isnan(before["prev_obs"])
+        with c:   # post-t: D-1 obs, D obs, and a MEX run
+            db.upsert(c, "obs", [_obs("2024-01-05T02:51:00+00:00", 60.0, six_max_c=20.0),
+                                 _obs("2024-01-05T18:51:00+00:00", 80.0)])
+            db.upsert(c, "mos_runs", [_mos("MEX", "2024-01-04T22:00:00+00:00", 99.0)])
+        after = _ctx(c, tmp_path).row("KNYC", "high", D, T_PRE)
+        assert all((math.isnan(before[k]) and math.isnan(after[k])) or before[k] == after[k]
+                   for k in FEATURE_COLS)
+
+
+def test_six_hour_group_ending_after_t_is_ignored(tmp_path):
+    t = datetime(2024, 1, 5, 17, 55, tzinfo=timezone.utc)   # 17:51 report valid, its 12-18Z window not over
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c)
+        before = _ctx(c, tmp_path).row("KNYC", "high", D, t)
+        assert before["run_ext"] < 46.0                    # the 7.8 C group (46.04 F) is not admitted
+        with c:
+            db.upsert(c, "obs", [_obs("2024-01-05T17:51:00+00:00", 45.0, six_max_c=25.0)])
+        assert _ctx(c, tmp_path).row("KNYC", "high", D, t)["run_ext"] == before["run_ext"]
 
 
 def test_truth_uses_final_reports_only(tmp_path):
