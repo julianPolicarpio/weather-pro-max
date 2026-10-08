@@ -21,6 +21,8 @@ CANDLE_WORKERS = 3
 COMPLETE_MARGIN_D = 2
 SOURCES = ("cli", "mos", "obs", "kalshi-markets", "kalshi-candles")
 
+REPORT_DIR = Path("docs/reports")
+
 
 def _chunks_for(source, paced, conn, stations, since, today, candle_since=None,
                 complete_before=None):
@@ -112,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "evaluate":
             for metric in ("high", "low"):
                 evaluate.select_and_gate(conn, metric, utcnow_iso)
-            path = evaluate.write_report(conn, Path(f"docs/reports/citycast-evaluation-{date.today()}.md"))
+            path = evaluate.write_report(conn, REPORT_DIR / f"citycast-evaluation-{date.today()}.md")
             print(json.dumps({"report": str(path)}))
             return 0
         if args.cmd == "train":
@@ -122,9 +124,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "predict":
             if not args.no_refresh:
                 paced, today = Paced(), date.today()
+                refresh_errors = []
                 for source in ("cli", "mos", "obs"):
-                    run_chunks(conn, _chunks_for(source, paced, conn, stations, today - timedelta(days=7), today),
-                               now_iso=utcnow_iso, progress=lambda m: None)
+                    s = run_chunks(conn, _chunks_for(source, paced, conn, stations, today - timedelta(days=7), today),
+                                   now_iso=utcnow_iso, progress=lambda m: None)
+                    refresh_errors += s["errors"]
+                if refresh_errors:   # stale inputs must never feed the paper-trading bot
+                    print(json.dumps({"refresh_errors": refresh_errors}))
+                    return 1
             ctx = FeatureContext(conn, stations, args.db, mos_since=date.today() - timedelta(days=3))
             now = datetime.now(timezone.utc).replace(microsecond=0)
             written = {m: live.predict(conn, ctx, m, now) for m in ("high", "low")}

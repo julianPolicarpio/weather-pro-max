@@ -1,6 +1,11 @@
 import json
+from contextlib import closing
+from pathlib import Path
 
-from citycast import cli
+import pytest
+
+from citycast import cli, db
+from test_citycast_evaluate import _seed as _seed_eval
 
 
 def test_backfill_dispatches_source_and_exit_code(tmp_path, monkeypatch, capsys):
@@ -74,3 +79,40 @@ def test_backfill_passes_utc_today_and_two_day_margin(tmp_path, monkeypatch):
     assert seen["today"] == datetime.now(timezone.utc).date()
     assert seen["complete_before"] == seen["today"] - timedelta(days=cli.COMPLETE_MARGIN_D) \
         and cli.COMPLETE_MARGIN_D == 2
+
+
+def _stub_refresh(monkeypatch, errors):
+    monkeypatch.setattr(cli, "Paced", lambda *a, **k: object())
+    monkeypatch.setattr(cli, "_chunks_for", lambda source, *a, **k: [])
+    monkeypatch.setattr(cli, "run_chunks", lambda *a, **k: {"done": 0, "skipped": 0, "rows": 0,
+                                                            "errors": errors})
+
+
+def test_predict_blocked_by_refresh_errors(tmp_path, monkeypatch, capsys):
+    _stub_refresh(monkeypatch, [{"source": "obs", "key": "k", "error": "boom"}])
+    monkeypatch.setattr(cli.live, "predict", lambda *a, **k: pytest.fail("must not predict on stale data"))
+    dbp = tmp_path / "h.db"
+    assert cli.main(["--db", str(dbp), "predict"]) == 1
+    out = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert out["refresh_errors"] and out["refresh_errors"][0]["error"] == "boom"
+    with closing(db.connect(dbp)) as c:
+        assert c.execute("SELECT COUNT(*) FROM live_predictions").fetchone()[0] == 0
+
+
+def test_predict_proceeds_when_refresh_clean(tmp_path, monkeypatch):
+    _stub_refresh(monkeypatch, [])
+    monkeypatch.setattr(cli.live, "predict", lambda *a, **k: 0)
+    assert cli.main(["--db", str(tmp_path / "h.db"), "predict"]) == 0
+
+
+def test_evaluate_writes_report_to_patched_dir(tmp_path, monkeypatch, capsys):
+    dbp = tmp_path / "h.db"
+    with closing(db.connect(dbp)) as c:
+        _seed_eval(c, good="city")
+    monkeypatch.setattr(cli, "REPORT_DIR", tmp_path / "reports")
+    assert cli.main(["--db", str(dbp), "evaluate"]) == 0
+    path = Path(json.loads(capsys.readouterr().out.splitlines()[-1])["report"])
+    assert path.parent == tmp_path / "reports" and "KNYC" in path.read_text()
+    with closing(db.connect(dbp)) as c:
+        assert tuple(c.execute("SELECT variant, gate_pass FROM model_choice WHERE metric='high'").fetchone()) \
+            == ("city", 1)

@@ -13,6 +13,7 @@ from citycast.qmodel import QUANTILES, QuantileModel, pmf_from_quantiles
 from citycast.walkforward import MIN_CITY_ROWS, _prev, choose_k
 
 MODEL_DIR = Path("data/citycast/models")
+MAX_BUNDLE_AGE_D = 40   # spec §3.9: final models are retrained monthly
 
 
 def _bundle_path(metric: str) -> Path:
@@ -31,7 +32,7 @@ def train_final(conn, df: pd.DataFrame, metric: str, stations: tuple[str, ...], 
         if variant == "city":
             tr = known[known["station"] == s]
             if len(tr) < MIN_CITY_ROWS:
-                variant = "shared"
+                variant, gate = "shared", 0   # the shared variant never passed the gate
             else:
                 bundle["city"][s] = QuantileModel("city", stations).fit(tr, now)
         k = choose_k(_prev(conn, s, metric, variant, now, truth), metric)
@@ -44,9 +45,17 @@ def train_final(conn, df: pd.DataFrame, metric: str, stations: tuple[str, ...], 
 
 def predict(conn, ctx, metric: str, now: datetime) -> int:
     bundle = pickle.loads(_bundle_path(metric).read_bytes())
+    age = now.date() - date.fromisoformat(bundle["trained_on"])
+    if age > timedelta(days=MAX_BUNDLE_AGE_D):
+        raise RuntimeError(f"{metric} bundle trained {bundle['trained_on']} is {age.days} days old "
+                           f"(max {MAX_BUNDLE_AGE_D}); retrain with `citycast train`")
+    current = {s: (v, g) for s, v, g in conn.execute(
+        "SELECT station, variant, gate_pass FROM model_choice WHERE metric=?", (metric,))}
     rows = []
     for icao, (variant, k, gate) in sorted(bundle["choice"].items()):
         if not gate or icao not in ctx.stations:
+            continue
+        if current.get(icao) != (variant, 1):   # gate re-read live: row gone, failed, or variant changed
             continue
         st = ctx.stations[icao]
         today = now.astimezone(ZoneInfo(st.tz)).date()
