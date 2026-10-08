@@ -4,9 +4,11 @@ import json
 import sys
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
-from citycast import coverage, db
+from citycast import coverage, dataset, db, evaluate, live, walkforward
 from citycast.backfill import run_chunks
+from citycast.features import FeatureContext
 from citycast.http import Paced
 from citycast.sources import cli_reports, kalshi_candles, kalshi_markets, mos, obs
 from citycast.stations import load_stations, series_index
@@ -53,6 +55,16 @@ def main(argv: list[str] | None = None) -> int:
     cov.add_argument("--json", action="store_true")
     cov.add_argument("--since", default="2021-01-01")
     cov.add_argument("--station")
+    ds = sub.add_parser("dataset")
+    ds.add_argument("--metric", choices=("high", "low"), required=True)
+    ds.add_argument("--since", default="2022-01-01")
+    wf = sub.add_parser("walkforward")
+    wf.add_argument("--metric", choices=("high", "low"), required=True)
+    sub.add_parser("evaluate")
+    tr = sub.add_parser("train")
+    tr.add_argument("--metric", choices=("high", "low"), required=True)
+    pr = sub.add_parser("predict")
+    pr.add_argument("--no-refresh", action="store_true")
     args = p.parse_args(argv)
 
     stations = load_stations()
@@ -88,4 +100,34 @@ def main(argv: list[str] | None = None) -> int:
             rep = coverage.compute(conn, stations, datetime.now(timezone.utc).date(), date.fromisoformat(args.since))
             print(json.dumps(rep, indent=1) if args.json else coverage.render(rep))
             return 0 if rep["pass"] else 1
+        if args.cmd == "dataset":
+            ctx = FeatureContext(conn, stations, args.db)
+            df = dataset.build(ctx, args.metric, date.fromisoformat(args.since), date.today())
+            print(json.dumps({"rows": len(df), "path": str(dataset.save(df, args.metric))}))
+            return 0
+        if args.cmd == "walkforward":
+            n = walkforward.run(conn, dataset.load(args.metric), args.metric, tuple(sorted(stations)), utcnow_iso)
+            print(json.dumps({"written": n}))
+            return 0
+        if args.cmd == "evaluate":
+            for metric in ("high", "low"):
+                evaluate.select_and_gate(conn, metric, utcnow_iso)
+            path = evaluate.write_report(conn, Path(f"docs/reports/citycast-evaluation-{date.today()}.md"))
+            print(json.dumps({"report": str(path)}))
+            return 0
+        if args.cmd == "train":
+            path = live.train_final(conn, dataset.load(args.metric), args.metric, tuple(sorted(stations)), date.today())
+            print(json.dumps({"bundle": str(path)}))
+            return 0
+        if args.cmd == "predict":
+            if not args.no_refresh:
+                paced, today = Paced(), date.today()
+                for source in ("cli", "mos", "obs"):
+                    run_chunks(conn, _chunks_for(source, paced, conn, stations, today - timedelta(days=7), today),
+                               now_iso=utcnow_iso, progress=lambda m: None)
+            ctx = FeatureContext(conn, stations, args.db, mos_since=date.today() - timedelta(days=3))
+            now = datetime.now(timezone.utc).replace(microsecond=0)
+            written = {m: live.predict(conn, ctx, m, now) for m in ("high", "low")}
+            print(json.dumps({"issued_utc": now.isoformat(), **written}))
+            return 0
     return 2
