@@ -209,7 +209,7 @@ CREATE TABLE wf_predictions (station TEXT, metric TEXT, event_date TEXT, asof_ut
      is too little power for a second CI test, and the job here is to catch a model that only
      looked good in-sample. Report-period numbers never choose the variant or k.
 - **Design freeze and fingerprint.** Every `citycast evaluate` run logs a sha256 fingerprint of
-  the modelling code (`asof, features, dataset, qmodel, walkforward, evaluate` modules) in
+  the modelling code (`asof, features, dataset, qmodel, metrics, walkforward, evaluate` modules) in
   `eval_log`. Once the report period has been scored, any later run under a different
   fingerprint puts a warning at the top of the report: the report period is no longer an
   untouched test and only the sandbox counts. Real data is not evaluated before `PUB_LAG_H` is
