@@ -26,7 +26,9 @@ def _months(since: date, today: date):
         cur = nxt
 
 
-def chunks(paced, stations: dict, since: date, today: date, now_iso) -> list[Chunk]:
+def chunks(paced, stations: dict, since: date, today: date, now_iso,
+           complete_before: date | None = None) -> list[Chunk]:
+    complete_before = complete_before or today
     out = []
     for st in stations.values():
         for a, b in _months(since, today):
@@ -38,5 +40,5 @@ def chunks(paced, stations: dict, since: date, today: date, now_iso) -> list[Chu
                     "tz": "Etc/UTC", "format": "onlycomma", "latlon": "no",
                     "report_type": [3, 4]})
                 return [("obs", obs_rows(text, st, now_iso()))]
-            out.append(Chunk("obs", f"{st.icao}:{a.strftime('%Y-%m')}", b > today, run))
+            out.append(Chunk("obs", f"{st.icao}:{a.strftime('%Y-%m')}", b > complete_before, run))
     return out

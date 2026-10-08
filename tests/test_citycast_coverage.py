@@ -10,12 +10,12 @@ ST = Station("KNYC", "NYC", "NY_ASOS", "OKX", 40.78, -73.97, 40.0, "America/New_
 F = "2026-10-07T00:00:00+00:00"
 
 
-def _seed(c, days, missing_cli=0):
+def _seed(c, days, missing_cli=0, gap_cli=()):
     start = date(2026, 1, 1)
     cli, mos = [], []
     for i in range(days):
         d = start + timedelta(days=i)
-        if i >= missing_cli:
+        if i >= missing_cli and i not in gap_cli:
             cli.append({"station": "KNYC", "date": d.isoformat(), "high_f": 40, "low_f": 30,
                         "final": 1, "issued_utc": None, "raw": "{}", "fetched_at": F})
         for model in ("MEX", "NBS"):
@@ -48,6 +48,15 @@ def test_full_coverage_passes_and_disagreement_listed(tmp_path):
 
 def test_missing_cli_fails_the_station(tmp_path):
     with closing(db.connect(tmp_path / "h.db")) as c:
-        _seed(c, 100, missing_cli=5)
+        _seed(c, 100, gap_cli=range(10, 15))
         rep = compute(c, {"KNYC": ST}, today=date(2026, 4, 11), since=date(2026, 1, 1))
         assert rep["stations"]["KNYC"]["cli_final_pct"] == 0.95 and not rep["pass"]
+
+
+def test_cli_measured_from_its_own_start(tmp_path):
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c, 100, missing_cli=30)
+        rep = compute(c, {"KNYC": ST}, today=date(2026, 4, 11), since=date(2026, 1, 1))
+        s = rep["stations"]["KNYC"]
+        assert s["cli_final_pct"] == 1.0 and s["cli_start"] == "2026-01-31" and s["pass"]
+        assert "2026-01-31" in render(rep)

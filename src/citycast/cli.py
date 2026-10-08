@@ -3,7 +3,7 @@ import argparse
 import json
 import sys
 from contextlib import closing
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from citycast import coverage, db
 from citycast.backfill import run_chunks
@@ -15,16 +15,22 @@ from highcast.timeutil import utcnow_iso
 # Kalshi requests stay paced to <= 5/s by Paced's lock; 3 in flight reach that pace
 # (measured ~0.35-0.55 s per request, 1.8 markets/s sequential on 2026-10-07).
 CANDLE_WORKERS = 3
+# IEM ingests a day or so late: a month/half-year is only final 2 UTC days after it ends.
+COMPLETE_MARGIN_D = 2
 SOURCES = ("cli", "mos", "obs", "kalshi-markets", "kalshi-candles")
 
 
-def _chunks_for(source, paced, conn, stations, since, today, candle_since=None):
+def _chunks_for(source, paced, conn, stations, since, today, candle_since=None,
+                complete_before=None):
     if source == "cli":
-        return cli_reports.chunks(paced, stations, since, today, utcnow_iso)
+        return cli_reports.chunks(paced, stations, since, today, utcnow_iso,
+                                  complete_before=complete_before)
     if source == "mos":
-        return mos.chunks(paced, stations, since, today, utcnow_iso)
+        return mos.chunks(paced, stations, since, today, utcnow_iso,
+                                  complete_before=complete_before)
     if source == "obs":
-        return obs.chunks(paced, stations, since, today, utcnow_iso)
+        return obs.chunks(paced, stations, since, today, utcnow_iso,
+                                  complete_before=complete_before)
     if source == "kalshi-markets":
         idx = {s: v for s, v in series_index(stations).items() if v[0] in stations}
         return kalshi_markets.chunks(paced, idx)
@@ -62,13 +68,15 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.cmd == "backfill":
             paced = Paced()
-            today = date.today()
+            today = datetime.now(timezone.utc).date()
+            complete_before = today - timedelta(days=COMPLETE_MARGIN_D)
             since = date.fromisoformat(args.since or "2021-01-01")
             sources = SOURCES if args.source == "all" else (args.source,)
             total = {"done": 0, "skipped": 0, "rows": 0, "errors": []}
             for source in sources:
                 chunks = _chunks_for(source, paced, conn, stations, since, today,
-                                     candle_since=args.since)
+                                     candle_since=args.since,
+                                     complete_before=complete_before)
                 s = run_chunks(conn, chunks, refresh=args.refresh, now_iso=utcnow_iso,
                                workers=CANDLE_WORKERS if source == "kalshi-candles" else 1)
                 for k in ("done", "skipped", "rows"):
@@ -77,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(total))
             return 1 if total["errors"] else 0
         if args.cmd == "coverage":
-            rep = coverage.compute(conn, stations, date.today(), date.fromisoformat(args.since))
+            rep = coverage.compute(conn, stations, datetime.now(timezone.utc).date(), date.fromisoformat(args.since))
             print(json.dumps(rep, indent=1) if args.json else coverage.render(rep))
             return 0 if rep["pass"] else 1
     return 2

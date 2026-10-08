@@ -58,3 +58,19 @@ def test_other_sources_use_one_worker(tmp_path, monkeypatch):
     seen = _spy(monkeypatch)
     cli.main(["--db", str(tmp_path / "h.db"), "backfill", "cli"])
     assert seen["workers"] == [1]
+
+
+def test_backfill_passes_utc_today_and_two_day_margin(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    seen = {}
+
+    def fake_chunks(source, paced, conn, stations, since, today, **kw):
+        seen.update(today=today, complete_before=kw.get("complete_before"))
+        return []
+    monkeypatch.setattr(cli, "_chunks_for", fake_chunks)
+    monkeypatch.setattr(cli, "run_chunks", lambda *a, **k: {"done": 0, "skipped": 0, "rows": 0,
+                                                            "errors": []})
+    cli.main(["--db", str(tmp_path / "h.db"), "backfill", "obs"])
+    assert seen["today"] == datetime.now(timezone.utc).date()
+    assert seen["complete_before"] == seen["today"] - timedelta(days=cli.COMPLETE_MARGIN_D) \
+        and cli.COMPLETE_MARGIN_D == 2

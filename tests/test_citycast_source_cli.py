@@ -38,3 +38,13 @@ def test_chunks_per_station_year_and_current_year_is_current():
     table, rows = cs[0].run()[0]
     assert table == "cli_daily" and len(rows) == 2
     assert seen == [{"station": "KNYC", "year": 2024}]
+
+
+def test_cli_year_current_until_february_of_next_year():
+    args = (object(), {"KNYC": ST}, date(2025, 1, 1), date(2026, 1, 1), lambda: "x")
+    cur = {c.key: c.current for c in chunks(*args, complete_before=date(2025, 12, 30))}
+    assert cur["KNYC:2025"] is True
+    cur = {c.key: c.current for c in chunks(*args, complete_before=date(2026, 1, 31))}
+    assert cur["KNYC:2025"] is True
+    cur = {c.key: c.current for c in chunks(*args, complete_before=date(2026, 2, 1))}
+    assert cur["KNYC:2025"] is False

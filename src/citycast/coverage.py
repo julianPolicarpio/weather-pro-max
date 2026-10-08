@@ -50,24 +50,28 @@ def _disagreements(conn, st) -> list[dict]:
 
 def compute(conn, stations: dict, today: date, since: date = date(2021, 1, 1)) -> dict:
     report = {"stations": {}, "disagreements": []}
-    n_days = _days(since, today)
     for st in stations.values():
+        # spec §2.5: each source is measured from max(since, its own first date for this station)
+        cli_start = conn.execute("SELECT MIN(date) FROM cli_daily WHERE station=? AND final=1 "
+                                 "AND date>=?", (st.icao, since.isoformat())).fetchone()[0]
         cli_final = conn.execute("SELECT COUNT(*) FROM cli_daily WHERE station=? AND final=1 "
                                  "AND date>=? AND date<?",
                                  (st.icao, since.isoformat(), today.isoformat())).fetchone()[0]
-        obs_days = conn.execute(
-            "SELECT COUNT(*) FROM (SELECT substr(datetime(valid_utc, ? || ' hours'), 1, 10) d "
-            "FROM obs WHERE station=? GROUP BY d HAVING COUNT(*) >= 20)",
-            (str(st.std_utc_offset), st.icao)).fetchone()[0]
+        cli_n = _days(max(since, date.fromisoformat(cli_start)), today) if cli_start else 0
+        obs_days = [r[0] for r in conn.execute(
+            "SELECT substr(datetime(valid_utc, ? || ' hours'), 1, 10) d FROM obs WHERE station=? "
+            "GROUP BY d HAVING COUNT(*) >= 20 ORDER BY d", (str(st.std_utc_offset), st.icao))]
+        obs_days = [d for d in obs_days if since.isoformat() <= d < today.isoformat()]
+        obs_n = _days(date.fromisoformat(obs_days[0]), today) if obs_days else 0
         k = conn.execute(
             "SELECT COUNT(DISTINCT event_ticker), COUNT(*), "
             "SUM(NOT (lo IS NULL AND hi IS NULL)), "
             "SUM(EXISTS (SELECT 1 FROM kalshi_candles kc WHERE kc.ticker = km.ticker)) "
             "FROM kalshi_markets km WHERE station=?", (st.icao,)).fetchone()
         mos = _mos_pct(conn, st, today)
-        cli_pct = round(cli_final / n_days, 4) if n_days else 0.0
-        s = {"cli_final_pct": cli_pct, "mos_pct": mos,
-             "obs_pct": round(obs_days / n_days, 4) if n_days else 0.0,
+        cli_pct = round(cli_final / cli_n, 4) if cli_n else 0.0
+        s = {"cli_final_pct": cli_pct, "cli_start": cli_start, "mos_pct": mos,
+             "obs_pct": round(len(obs_days) / obs_n, 4) if obs_n else 0.0,
              "kalshi_events": k[0] or 0, "kalshi_markets": k[1] or 0,
              "kalshi_usable": k[2] or 0, "kalshi_with_candles": k[3] or 0}
         s["pass"] = cli_pct >= MIN_PCT and all(mos.get(m, 0.0) >= MIN_PCT for m in REQUIRED_MODELS)
@@ -78,11 +82,11 @@ def compute(conn, stations: dict, today: date, since: date = date(2021, 1, 1)) -
 
 
 def render(report: dict) -> str:
-    lines = [f"{'station':8} {'cli':>6} {'MEX':>6} {'NBS':>6} {'GFS':>6} {'NBE':>6} {'obs':>6} "
+    lines = [f"{'station':8} {'cli':>6} {'cli_start':>10} {'MEX':>6} {'NBS':>6} {'GFS':>6} {'NBE':>6} {'obs':>6} "
              f"{'events':>7} {'mkts':>7} {'usable':>7} {'candles':>7}  pass"]
     for icao, s in sorted(report["stations"].items()):
         m = s["mos_pct"]
-        lines.append(f"{icao:8} {s['cli_final_pct']:6.1%} {m.get('MEX', 0):6.1%} {m.get('NBS', 0):6.1%} "
+        lines.append(f"{icao:8} {s['cli_final_pct']:6.1%} {s.get('cli_start') or '-':>10} {m.get('MEX', 0):6.1%} {m.get('NBS', 0):6.1%} "
                      f"{m.get('GFS', 0):6.1%} {m.get('NBE', 0):6.1%} {s['obs_pct']:6.1%} "
                      f"{s['kalshi_events']:7d} {s['kalshi_markets']:7d} {s['kalshi_usable']:7d} "
                      f"{s['kalshi_with_candles']:7d}  {'yes' if s['pass'] else 'NO'}")

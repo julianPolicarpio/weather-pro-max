@@ -58,3 +58,12 @@ def test_chunks_half_years_per_model_and_last_is_current():
     cs[0].run()
     assert asked == [{"station": "KNYC", "model": "MEX", "sts": "2025-01-01T00:00Z",
                       "ets": "2025-07-01T00:00Z", "format": "csv"}]
+
+
+def test_complete_before_decides_current_not_today():
+    args = (object(), {"KNYC": ST}, date(2026, 1, 1), date(2026, 7, 1), lambda: F)
+    kw = {"models": ("MEX",)}
+    cur = {c.key: c.current for c in chunks(*args, complete_before=date(2026, 6, 29), **kw)}
+    assert cur["KNYC:MEX:2026-01-01"] is True
+    cur = {c.key: c.current for c in chunks(*args, complete_before=date(2026, 7, 2), **kw)}
+    assert cur["KNYC:MEX:2026-01-01"] is False
