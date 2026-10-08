@@ -120,3 +120,63 @@ def test_market_brier_uses_fresh_candle_only(tmp_path):
         mean, lo, hi, n = res["KNYC"]
         # model p = 1.0 (all mass on 50-51), market mid 0.45 from the 11:00 candle; won = 1
         assert n == 1 and abs(mean - (0.0 - 0.3025)) < 1e-9
+
+
+def test_select_and_gate_clears_stale_choices_for_this_metric_only(tmp_path):
+    stale = "INSERT INTO model_choice VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c, good="city")
+        with c:
+            c.execute(stale, ("KSFO", "high", "city", 1.0, 2.0, -0.1, 1, 1.0, 2.0, 70, 1, F))
+            c.execute(stale, ("KSFO", "low", "city", 1.0, 2.0, -0.1, 1, 1.0, 2.0, 70, 1, F))
+        select_and_gate(c, "high", lambda: F)
+        rows = {(r[0], r[1]) for r in c.execute("SELECT station, metric FROM model_choice")}
+        assert ("KSFO", "high") not in rows and ("KNYC", "high") in rows
+        assert ("KSFO", "low") in rows
+
+
+def test_fingerprint_covers_scoring_modules():
+    from pathlib import Path
+
+    import citycast.evaluate as ev
+    assert "metrics" in ev.FINGERPRINT_MODULES
+    for name in ev.FINGERPRINT_MODULES:
+        assert (Path(ev.__file__).parent / f"{name}.py").exists()
+
+
+def test_warning_survives_reverting_to_original_code(tmp_path):
+    from citycast.evaluate import code_fingerprint, write_report
+    cur = code_fingerprint()
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        with c:
+            c.executemany("INSERT INTO eval_log VALUES (?,?,?,?)", [
+                ("2026-10-01T00:00:00", "high", cur, 1),
+                ("2026-10-02T00:00:00", "high", "0000", 1),
+                ("2026-10-03T00:00:00", "high", cur, 1)])
+        assert "WARNING" in write_report(c, tmp_path / "r.md").read_text()
+
+
+def test_market_brier_uses_kalshi_result_not_cli_bracket(tmp_path):
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c, good="city")
+        select_and_gate(c, "high", lambda: F)
+        with c:
+            db.upsert(c, "kalshi_markets", [{
+                "ticker": "M1", "series": "KXHIGHNY", "event_ticker": "E1", "station": "KNYC",
+                "metric": "high", "event_date": "2025-01-01", "lo": 50, "hi": 51, "open_time": None,
+                "close_time": "2025-01-02T04:59:00+00:00", "result": "no", "expiration_value": "50",
+                "raw": "{}"}])
+            db.upsert(c, "kalshi_candles", [
+                {"ticker": "M1", "end_utc": "2025-01-01T11:00:00+00:00", "yes_bid": 0.40, "yes_ask": 0.50,
+                 "volume": 1.0, "open_interest": 1.0}])
+        mean, _, _, n = market_brier(c, "high")["KNYC"]
+        # CLI truth 50 is in [50,51] but Kalshi settled "no": won=0, model p=1 -> 1.0 - 0.45**2
+        assert n == 1 and abs(mean - (1.0 - 0.2025)) < 1e-9
+
+
+def test_report_labels_selection_columns_in_sample(tmp_path):
+    from citycast.evaluate import write_report
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c, good="city")
+        select_and_gate(c, "high", lambda: F)
+        assert "in-sample for the variant choice" in write_report(c, tmp_path / "r.md").read_text()
