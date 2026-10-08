@@ -57,7 +57,9 @@ def _half_years(since: date, today: date):
         start = end
 
 
-def chunks(paced, stations: dict, since: date, today: date, now_iso, models=MODELS) -> list[Chunk]:
+def chunks(paced, stations: dict, since: date, today: date, now_iso, models=MODELS,
+           complete_before: date | None = None) -> list[Chunk]:
+    complete_before = complete_before or today
     out = []
     for st in stations.values():
         for model in models:
@@ -68,5 +70,5 @@ def chunks(paced, stations: dict, since: date, today: date, now_iso, models=MODE
                                                     "ets": f"{b.isoformat()}T00:00Z",
                                                     "format": "csv"})
                     return [("mos_runs", parse_mos_runs(text, st, model, now_iso()))]
-                out.append(Chunk("mos", f"{st.icao}:{model}:{a.isoformat()}", b > today, run))
+                out.append(Chunk("mos", f"{st.icao}:{model}:{a.isoformat()}", b > complete_before, run))
     return out

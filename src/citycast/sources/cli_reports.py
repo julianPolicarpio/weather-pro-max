@@ -21,14 +21,14 @@ def cli_rows(payload: dict, st, fetched_at: str) -> list[dict]:
     return out
 
 
-def chunks(paced, stations: dict, since: date, today: date, now_iso) -> list[Chunk]:
+def chunks(paced, stations: dict, since: date, today: date, now_iso,
+           complete_before: date | None = None) -> list[Chunk]:
     out = []
-    # January corrections can still land on last year's December reports.
-    first_current = today.year - 1 if today.month == 1 else today.year
+    complete_before = complete_before or today
     for st in stations.values():
         for year in range(since.year, today.year + 1):
             def run(st=st, year=year):
                 payload = paced.get_json(IEM_CLI, {"station": st.icao, "year": year})
                 return [("cli_daily", cli_rows(payload, st, now_iso()))]
-            out.append(Chunk("cli", f"{st.icao}:{year}", year >= first_current, run))
+            out.append(Chunk("cli", f"{st.icao}:{year}", date(year + 1, 2, 1) > complete_before, run))
     return out

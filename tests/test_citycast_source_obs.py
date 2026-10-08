@@ -32,3 +32,13 @@ def test_chunks_are_months_with_current_month_current():
     table, rows = cs[0].run()[0]
     assert table == "obs" and len(rows) == 2
     assert asked[0]["station"] == "NYC" and asked[0]["month1"] == 8 and asked[0]["month2"] == 9
+
+
+def test_complete_before_decides_current_not_today():
+    class P:
+        pass
+    args = (P(), {"KNYC": ST}, date(2026, 9, 1), date(2026, 10, 1), lambda: F)
+    cur = {c.key: c.current for c in chunks(*args, complete_before=date(2026, 9, 29))}
+    assert cur["KNYC:2026-09"] is True
+    cur = {c.key: c.current for c in chunks(*args, complete_before=date(2026, 10, 2))}
+    assert cur["KNYC:2026-09"] is False
