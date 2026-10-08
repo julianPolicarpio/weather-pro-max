@@ -1297,6 +1297,20 @@ snapshots/quotes/orders tables: no new feeds, still read-only GETs, still paper 
 `sandbox cycle` runs every 15 minutes (launchd cycle job not installed as of 2026-10-07).
 **Before building:** brainstorm → spec → plan, mockup first.
 
+## 17. ⏳ REAL-MONEY EXECUTION + EARNED STAKING — queued 2026-10-08 (Julian), blocked on an UNLOCKED bot
+
+Nothing places real orders today. When a sandbox bot reaches UNLOCKED (two-stage rule), this needs
+its own brainstorm → spec → plan before any real order:
+
+* **Earned staking (Julian's rule):** start at 1 contract and a $5 bankroll; reaching $10 earns
+  more betting power (e.g. 2 contracts), with a step back down after drawdowns. Exact steps to be
+  set in the spec.
+* **Decided 2026-10-08, test phase:** paper bots stay at $5 and 1 contract (no paper-cash increase);
+  no "die if no bet" rule — skipping bad prices is the skill being tested; bets are chosen by edge
+  after fees, not by win probability; no online reinforcement learning (too few settled bets — the
+  learner is LightGBM/Laya trained on history, spec 2026-10-07 §4).
+* Real orders, credentials and stake changes are Julian's decisions, one at a time.
+
 ## Not doing, and why
 
 - **Auto-skip weatherguard** (Prompt 3 part 1). The near-boundary days it would
