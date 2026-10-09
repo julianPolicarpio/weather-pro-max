@@ -17,9 +17,10 @@ from highcast.latentmax import visible_running_extremum
 from highcast.timeutil import climate_day_bounds
 
 MOS_MODELS = ("MEX", "GFS", "NBS", "NBE")
-# Publication lag per model (spec §3.3, revised 2026-10-08): conservative defaults until Task 0
-# measures first-seen times on IEM; a too-short lag leaks unpublished forecasts into training.
-PUB_LAG_H = {"GFS": 5.0, "MEX": 5.0, "NBS": 3.0, "NBE": 3.0}
+# Publication lag per model (spec §3.3): max(default, observed max + 0.5 h) from the Task 0 measurement of
+# IEM first-seen times (docs/reports/mos-publication-lag-2026-10-09.md; defaults GFS 5, MEX 5, NBS 3, NBE 3).
+# A too-short lag leaks unpublished forecasts into training; MEX's fastest run took 5.55 h, its slowest 17.82 h.
+PUB_LAG_H = {"GFS": 5.0, "MEX": 18.3, "NBS": 3.0, "NBE": 14.0}
 FULL_DAY_MIN_PTS = 6    # an NBS/NBE run counts toward the anchor only if it covers >= 18 h of the day
 CLIM_WINDOW_D = 7
 CLIM_MIN_N = 10

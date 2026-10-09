@@ -3,7 +3,7 @@ from datetime import date
 
 from citycast import dataset, db
 from citycast.features import FEATURE_COLS, FeatureContext
-from test_citycast_features import NYC, _seed
+from test_citycast_features import NYC, _seed, pinned_pub_lag  # noqa: F401 (autouse)
 
 
 def test_build_one_day_has_grid_rows_and_truth(tmp_path, monkeypatch):

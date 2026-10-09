@@ -8,7 +8,7 @@ import pytest
 
 from citycast import db, live
 from citycast.features import FEATURE_COLS, FeatureContext
-from test_citycast_features import NYC, _seed
+from test_citycast_features import NYC, _seed, pinned_pub_lag  # noqa: F401 (autouse)
 from test_citycast_walkforward import _frame
 
 TRAINED = date(2023, 12, 30)
