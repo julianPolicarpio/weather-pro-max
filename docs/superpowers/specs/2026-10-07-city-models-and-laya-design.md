@@ -140,7 +140,9 @@ NaN when none. **Publication lag per model** (`PUB_LAG_H`, revised 2026-10-08 af
 until measured, the conservative defaults GFS 5 h, MEX 5 h, NBS 3 h, NBE 3 h; 2b Task 0 measures
 first-seen times on IEM's archive for 24 h and may only replace a default with
 `max(observed max lag) + 0.5 h` (never shorter than observed). A lag that is too short leaks a
-forecast that was not yet published into training. **Anchor and spread use full-coverage runs only**
+forecast that was not yet published into training. **Measured 2026-10-09** (12 runs per model;
+docs/reports/mos-publication-lag-2026-10-09.md): GFS 4.2–4.4 h, MEX 5.6–17.8 h, NBS 0.8–1.8 h,
+NBE 1.4–13.5 h → `PUB_LAG_H` = max(default, max + 0.5) = GFS 5, **MEX 18.3**, NBS 3, **NBE 14.0** h. **Anchor and spread use full-coverage runs only**
 (revised 2026-10-08 after the Task 2 review on real data): for MEX and GFS every run counts; for NBS
 a run counts when `npts ≥ 6` (≥ 18 h of the climate day), and the anchor uses the **latest published
 full-coverage run**, not the latest run (after local noon the newest NBS run is always partial, which

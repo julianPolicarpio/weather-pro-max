@@ -1,9 +1,12 @@
 # tests/test_citycast_features.py
 import math
 from contextlib import closing
-from datetime import date, datetime, timedelta, timezone
 
-from citycast import db
+import pytest
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+
+from citycast import db, features
 from citycast.features import FEATURE_COLS, FeatureContext
 from citycast.stations import Station
 
@@ -13,6 +16,25 @@ F = "2026-10-07T00:00:00+00:00"
 D = date(2024, 1, 5)
 T_PRE = datetime(2024, 1, 4, 23, 0, tzinfo=timezone.utc)      # 18:00 EST on D-1
 T_SAME = datetime(2024, 1, 5, 19, 0, tzinfo=timezone.utc)     # 14:00 EST on D
+
+
+# These tests exercise the lag MECHANISM with fixed values (MEX/GFS 5 h, NBS/NBE 3 h); the production values
+# are checked in test_production_pub_lag_follows_the_measurement. Imported by the dataset and live tests too.
+TEST_PUB_LAG_H = {"GFS": 5.0, "MEX": 5.0, "NBS": 3.0, "NBE": 3.0}
+
+
+@pytest.fixture(autouse=True)
+def pinned_pub_lag(monkeypatch):
+    monkeypatch.setattr(features, "PUB_LAG_H", dict(TEST_PUB_LAG_H))
+
+
+def test_production_pub_lag_follows_the_measurement():
+    """Spec §3.3: max(default, observed max + 0.5 h), docs/reports/mos-publication-lag-2026-10-09.md."""
+    import ast
+    tree = ast.parse(Path(features.__file__).read_text())
+    prod = next(ast.literal_eval(n.value) for n in tree.body
+                if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", None) == "PUB_LAG_H")
+    assert prod == {"GFS": 5.0, "MEX": 18.3, "NBS": 3.0, "NBE": 14.0}
 
 
 def _mos(model, runtime, value, n_points=1):
