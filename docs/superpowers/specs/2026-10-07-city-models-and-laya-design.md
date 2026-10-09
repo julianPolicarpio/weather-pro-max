@@ -189,8 +189,11 @@ CREATE TABLE wf_predictions (station TEXT, metric TEXT, event_date TEXT, asof_ut
   pmf_json TEXT NOT NULL, k REAL NOT NULL, created_at TEXT NOT NULL,
   PRIMARY KEY (station, metric, event_date, asof_utc, variant));
 ```
-`variant` ∈ {shared, city, mosnorm}; `mosnorm` = the sandbox `mos` baseline
-(Normal(f_MEX, σ = 3.0 °F)) for the same rows.
+`variant` ∈ {shared, city, mosnorm}; `mosnorm` = Normal(f_MEX, σ = 3.0 °F) for the same rows —
+the sandbox `mos` baseline — truncated at the observed running extremum on same-day rows exactly as
+the model is (revised 2026-10-09: the sandbox `mos` bot is pre-day only, and an untruncated baseline
+would let "beats MOS" mean "has seen today's observations"). The report also shows the pre-day-only
+difference.
 
 ### 3.8 Evaluation, selection and gate (`citycast evaluate`)
 - **CRPS** on the integer pmf vs CLI, per (station, metric, variant), clustered by event date.
@@ -209,8 +212,12 @@ CREATE TABLE wf_predictions (station TEXT, metric TEXT, event_date TEXT, asof_ut
      is too little power for a second CI test, and the job here is to catch a model that only
      looked good in-sample. Report-period numbers never choose the variant or k.
 - **Design freeze and fingerprint.** Every `citycast evaluate` run logs a sha256 fingerprint of
-  the modelling code (`asof, features, dataset, qmodel, metrics, walkforward, evaluate` modules) in
-  `eval_log`. Once the report period has been scored, any later run under a different
+  the modelling code (`citycast.fingerprint.FINGERPRINT_FILES`: the citycast modelling modules, the
+  highcast helpers they call — latentmax, buckets, timeutil — and the station registry) in
+  `eval_log`. The dataset pickle and the `wf_runs` row carry the fingerprint they were built under;
+  `citycast evaluate` refuses to run unless both match the current code and the walk-forward run
+  finished with every row stored. Evaluation computes everything first and commits model_choice,
+  eval_log and the report only when all of it succeeded. Once the report period has been scored, any later run under a different
   fingerprint puts a warning at the top of the report: the report period is no longer an
   untouched test and only the sandbox counts. Real data is not evaluated before `PUB_LAG_H` is
   set from the Task 0 measurement, so that planned change does not spend the report period.
