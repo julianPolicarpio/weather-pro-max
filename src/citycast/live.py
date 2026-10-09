@@ -43,7 +43,7 @@ def train_final(conn, df: pd.DataFrame, metric: str, stations: tuple[str, ...], 
     return path
 
 
-def predict(conn, ctx, metric: str, now: datetime) -> int:
+def predict(conn, ctx, metric: str, now: datetime, skip: frozenset[str] = frozenset()) -> int:
     bundle = pickle.loads(_bundle_path(metric).read_bytes())
     age = now.date() - date.fromisoformat(bundle["trained_on"])
     if age > timedelta(days=MAX_BUNDLE_AGE_D):
@@ -53,7 +53,7 @@ def predict(conn, ctx, metric: str, now: datetime) -> int:
         "SELECT station, variant, gate_pass FROM model_choice WHERE metric=?", (metric,))}
     rows = []
     for icao, (variant, k, gate) in sorted(bundle["choice"].items()):
-        if not gate or icao not in ctx.stations:
+        if not gate or icao not in ctx.stations or icao in skip:
             continue
         if current.get(icao) != (variant, 1):   # gate re-read live: row gone, failed, or variant changed
             continue

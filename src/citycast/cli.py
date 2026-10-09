@@ -2,6 +2,7 @@
 import argparse
 import json
 import sys
+import time
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -20,6 +21,8 @@ from highcast.timeutil import utcnow_iso
 CANDLE_WORKERS = 3
 # IEM ingests a day or so late: a month/half-year is only final 2 UTC days after it ends.
 COMPLETE_MARGIN_D = 2
+# One retry of the failed refresh chunks, after this pause (IEM timeouts are usually transient).
+RETRY_PAUSE_S = 30
 SOURCES = ("cli", "mos", "obs", "kalshi-markets", "kalshi-candles")
 
 REPORT_DIR = Path("docs/reports")
@@ -134,16 +137,31 @@ def main(argv: list[str] | None = None) -> int:
                                        complete_before=complete_before),
                            mos.recent_chunks(paced, stations, now_utc, utcnow_iso),   # never logged
                            obs.recent_chunks(paced, stations, now_utc, utcnow_iso)]
-                refresh_errors = []
+                refresh_errors, failed = [], []
                 for chunks in refresh:
                     s = run_chunks(conn, chunks, now_iso=utcnow_iso, progress=lambda m: None)
                     refresh_errors += s["errors"]
-                if refresh_errors:   # stale inputs must never feed the paper-trading bot
-                    print(json.dumps({"refresh_errors": refresh_errors}))
-                    return 1
-            ctx = FeatureContext(conn, stations, args.db, mos_since=date.today() - timedelta(days=3))
+                    by_key = {(c.source, c.key): c for c in chunks}
+                    failed += [by_key[(e["source"], e["key"])] for e in s["errors"]
+                               if (e["source"], e["key"]) in by_key]
+                if failed:   # retry only the chunks that errored; errors persisting after it count
+                    time.sleep(RETRY_PAUSE_S)
+                    retry = run_chunks(conn, failed, now_iso=utcnow_iso, progress=lambda m: None)
+                    retried = {(c.source, c.key) for c in failed}
+                    refresh_errors = [e for e in refresh_errors if (e["source"], e["key"]) not in retried] \
+                        + retry["errors"]
+                # a station whose refresh still failed gets no forecast; stale inputs must never feed the bot
+                skip = frozenset(e["key"].split(":", 1)[0] for e in refresh_errors)
+            else:
+                refresh_errors, skip = [], frozenset()
             now = datetime.now(timezone.utc).replace(microsecond=0)
-            written = {m: live.predict(conn, ctx, m, now) for m in ("high", "low")}
-            print(json.dumps({"issued_utc": now.isoformat(), **written}))
-            return 0
+            out = {"issued_utc": now.isoformat(), "high": 0, "low": 0,
+                   "skipped_stations": sorted(skip), "refresh_errors": refresh_errors}
+            if set(stations) <= skip:   # every station blocked: write nothing
+                print(json.dumps(out))
+                return 1
+            ctx = FeatureContext(conn, stations, args.db, mos_since=date.today() - timedelta(days=3))
+            out.update({m: live.predict(conn, ctx, m, now, skip) for m in ("high", "low")})
+            print(json.dumps(out))
+            return 3 if skip else 0
     return 2

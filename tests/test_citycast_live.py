@@ -50,6 +50,19 @@ def test_train_then_predict_writes_live_rows_for_gated_station(tmp_path, monkeyp
         assert abs(sum(json.loads(row[3]).values()) - 1) < 1e-6
 
 
+def test_skipped_station_gets_no_rows_but_others_do(tmp_path, monkeypatch):
+    monkeypatch.setattr(live, "MODEL_DIR", tmp_path / "models")
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c)
+        _choice(c)
+        live.train_final(c, _frame(), "high", ("KLAX", "KNYC"), TRAINED)
+        ctx = FeatureContext(c, {"KNYC": NYC}, tmp_path / "h.db")
+        assert live.predict(c, ctx, "high", NOW, frozenset({"KSEA"})) == 1      # another station skipped
+        c.execute("DELETE FROM live_predictions")
+        assert live.predict(c, ctx, "high", NOW, frozenset({"KNYC"})) == 0
+        assert c.execute("SELECT COUNT(*) FROM live_predictions").fetchone()[0] == 0
+
+
 def test_gate_zero_station_gets_no_rows(tmp_path, monkeypatch):
     monkeypatch.setattr(live, "MODEL_DIR", tmp_path / "models")
     with closing(db.connect(tmp_path / "h.db")) as c:
