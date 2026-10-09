@@ -160,3 +160,14 @@ def test_other_sqlite_errors_still_warn(tmp_path, caplog, make_db):
         out = CitycastBot(make_db(tmp_path)).forecast_for_event(_markets(), Snap())
     assert out == (None, None)
     assert any("KNYC" in r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
+
+
+def test_bare_forecast_bot_subclass_raises_not_implemented():
+    import pytest
+    from sandbox.bots import ForecastBot
+
+    class Bare(ForecastBot):
+        pass
+
+    with pytest.raises(NotImplementedError):
+        Bare().forecast_for_event(_markets(), Snap())
