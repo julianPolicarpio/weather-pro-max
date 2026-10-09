@@ -17,9 +17,10 @@ METRICS = ("high", "low")
 _STR_COLS = ("station", "event_date", "asof_utc", "variant")
 
 
-def check_inputs(conn, metric: str) -> None:
+def check_inputs(conn, metric: str, fingerprint: str) -> None:
     """Refuse to score wf_predictions that are partial (a crashed or running walk-forward) or were
-    produced by a dataset or walk-forward under code other than the current code (spec §3.8)."""
+    produced by a dataset or walk-forward under code other than `fingerprint`, the hash of the current
+    code that the command took once at its start (spec §3.8)."""
     run = conn.execute("SELECT fingerprint, dataset_fingerprint, started_at, finished_at, rows FROM wf_runs "
                        "WHERE metric=?", (metric,)).fetchone()
     if run is None:
@@ -31,7 +32,7 @@ def check_inputs(conn, metric: str) -> None:
     if rows != n:
         raise RuntimeError(f"{metric}: wf_predictions holds {n} rows but the walk-forward run wrote {rows}; "
                            "rerun it")
-    cur = code_fingerprint()
+    cur = fingerprint
     if fp != cur:
         raise RuntimeError(f"{metric}: walk-forward ran under different code ({fp[:12]}, current {cur[:12]}); "
                            "rerun it")
@@ -189,13 +190,13 @@ def market_brier(conn, metric: str, choice: dict[str, str]) -> dict[str, dict[st
     return out
 
 
-def _freeze_warning(conn) -> list[str]:
+def _freeze_warning(conn, fingerprint: str) -> list[str]:
     first = conn.execute("SELECT run_at, fingerprint FROM eval_log WHERE report_scored=1 "
                          "ORDER BY run_at LIMIT 1").fetchone()
     if first is None:
         return []
     seen = {r[0] for r in conn.execute("SELECT DISTINCT fingerprint FROM eval_log WHERE run_at>=?", (first[0],))}
-    if len(seen) <= 1 and first[1] == code_fingerprint():
+    if len(seen) <= 1 and first[1] == fingerprint:
         return []
     return [f"> **WARNING:** the report period was first scored on {first[0]} under different modelling "
             "code. It is no longer an untouched test; only the sandbox forward test counts.", ""]
@@ -243,12 +244,15 @@ def write_report(results: dict[str, dict], warning: list[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def evaluate_all(conn, report_path: Path, now_iso) -> Path:
+def evaluate_all(conn, report_path: Path, now_iso, fingerprint: str | None = None) -> Path:
     """`citycast evaluate`: check the inputs of both metrics, compute everything, then write model_choice
     and eval_log in ONE transaction and the report file last. A failure before that commits nothing, so a
-    crash never records the report period as scored (spec §3.8)."""
+    crash never records the report period as scored (spec §3.8). The code is hashed once, here (or by the
+    caller, at the start of the command): the same value is checked against the inputs, compared in the
+    freeze warning and logged, so an edit during the scoring cannot make the log name code that did not score."""
+    fp = fingerprint if fingerprint is not None else code_fingerprint()
     for metric in METRICS:
-        check_inputs(conn, metric)
+        check_inputs(conn, metric, fp)
     results: dict[str, dict] = {}
     for metric in METRICS:
         df = scored(conn, metric)
@@ -257,8 +261,8 @@ def evaluate_all(conn, report_path: Path, now_iso) -> Path:
         del df                             # market_brier loads pmfs; the score frame is no longer needed
         choice = {r["station"]: r["variant"] for r in choices}
         results[metric] = {"choices": choices, "pre_day": pre_day, "market": market_brier(conn, metric, choice)}
-    text = write_report(results, _freeze_warning(conn))
-    run_at, fp = now_iso(), code_fingerprint()
+    text = write_report(results, _freeze_warning(conn, fp))
+    run_at = now_iso()
     with conn:
         for metric in METRICS:
             choices = results[metric]["choices"]

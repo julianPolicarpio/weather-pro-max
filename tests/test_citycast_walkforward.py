@@ -176,6 +176,43 @@ def test_run_records_a_finished_run_tied_to_code_and_dataset(tmp_path, monkeypat
         assert c.execute("SELECT COUNT(*) FROM wf_predictions WHERE metric='high'").fetchone()[0] == n
 
 
+def test_run_hashes_the_code_once_at_its_start(tmp_path, monkeypatch):
+    monkeypatch.setitem(PARAMS, "n_estimators", 5)
+    calls = []
+
+    def hashes():                                                # an edit mid-run would change the next hash
+        calls.append(1)
+        return f"hash-{len(calls)}"
+    monkeypatch.setattr(walkforward, "code_fingerprint", hashes)
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        n = run(c, _frame(), "high", ("KLAX", "KNYC"), NOW, today=date(2023, 1, 1), progress=lambda m: None)
+        assert n > 0 and _wf_run_row(c)[0] == "hash-1"
+    assert len(calls) == 1
+
+
+def test_run_uses_the_fingerprint_it_is_given_without_hashing(tmp_path, monkeypatch):
+    monkeypatch.setitem(PARAMS, "n_estimators", 5)
+    monkeypatch.setattr(walkforward, "code_fingerprint", lambda: pytest.fail("run hashed the code itself"))
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        run(c, _frame(), "high", ("KLAX", "KNYC"), NOW, today=date(2023, 1, 1), progress=lambda m: None,
+            fingerprint="from-the-command")
+        assert _wf_run_row(c)[0] == "from-the-command"
+
+
+def test_walkforward_command_passes_its_start_of_command_hash(tmp_path, monkeypatch, capsys):
+    from citycast import cli
+    calls, seen = [], []
+
+    def hashes():
+        calls.append(1)
+        return f"hash-{len(calls)}"
+    monkeypatch.setattr(cli, "code_fingerprint", hashes)
+    monkeypatch.setattr(cli.dataset, "load", lambda metric: (calls.append("load"), _frame())[1])
+    monkeypatch.setattr(cli.walkforward, "run", lambda *a, **k: seen.append(k.get("fingerprint")) or 0)
+    assert cli.main(["--db", str(tmp_path / "h.db"), "walkforward", "--metric", "high"]) == 0
+    assert seen == ["hash-1"] and calls == [1, "load"]           # hashed once, before the dataset was read
+
+
 def test_crash_mid_run_leaves_the_run_unfinished(tmp_path, monkeypatch):
     monkeypatch.setitem(PARAMS, "n_estimators", 5)
     df, kw = _frame(), dict(today=date(2023, 1, 1))

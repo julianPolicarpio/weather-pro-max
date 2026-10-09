@@ -188,6 +188,49 @@ def test_evaluate_all_checks_both_metrics_before_scoring(tmp_path, monkeypatch):
         assert c.execute("SELECT COUNT(*) FROM eval_log").fetchone()[0] == 0
 
 
+def test_evaluate_all_hashes_the_code_once_and_logs_that_value(tmp_path, monkeypatch):
+    import citycast.evaluate as ev
+    first = "A" * 64
+    calls = []
+
+    def hashes():                                                # the code "changes" after the first hash
+        calls.append(1)
+        return first if len(calls) == 1 else "B" * 64
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c, good="city")
+        _mark_runs(c, fingerprint=first, dataset_fingerprint=first)
+        monkeypatch.setattr(ev, "code_fingerprint", hashes)
+        text = evaluate_all(c, tmp_path / "r.md", lambda: F).read_text()
+        assert "WARNING" not in text                              # nothing earlier was scored under other code
+        assert {r[0] for r in c.execute("SELECT fingerprint FROM eval_log")} == {first}
+        assert len(calls) == 1                                    # check_inputs, warning and log share it
+
+
+def test_evaluate_all_uses_the_fingerprint_it_is_given_without_hashing(tmp_path, monkeypatch):
+    import citycast.evaluate as ev
+    given = "C" * 64
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c, good="city")
+        _mark_runs(c, fingerprint=given, dataset_fingerprint=given)
+        monkeypatch.setattr(ev, "code_fingerprint", lambda: pytest.fail("evaluate_all hashed the code itself"))
+        evaluate_all(c, tmp_path / "r.md", lambda: F, fingerprint=given)
+        assert {r[0] for r in c.execute("SELECT fingerprint FROM eval_log")} == {given}
+
+
+def test_evaluate_command_passes_its_start_of_command_hash(tmp_path, monkeypatch, capsys):
+    from citycast import cli
+    seen, calls = [], []
+
+    def hashes():
+        calls.append(1)
+        return f"hash-{len(calls)}"
+    monkeypatch.setattr(cli, "code_fingerprint", hashes)
+    monkeypatch.setattr(cli.evaluate, "evaluate_all",
+                        lambda conn, path, now_iso, fingerprint=None: seen.append(fingerprint) or path)
+    assert cli.main(["--db", str(tmp_path / "h.db"), "evaluate"]) == 0
+    assert seen == ["hash-1"] and len(calls) == 1
+
+
 def test_scored_streams_without_pmfs_unless_asked(tmp_path):
     with closing(db.connect(tmp_path / "h.db")) as c:
         _seed(c, good="city")
@@ -212,6 +255,8 @@ def test_fingerprint_covers_all_modelling_files():
     files = fingerprint.FINGERPRINT_FILES
     assert {"src/citycast/metrics.py", "src/highcast/buckets.py", "src/highcast/latentmax.py",
             "src/highcast/timeutil.py", "src/citycast/stations.py", "config/citycast_stations.yaml"} <= set(files)
+    assert files[-5:] == ("src/highcast/timeutil.py", "src/highcast/quantize.py", "src/highcast/config.py",
+                          "src/highcast/metric.py", "config/citycast_stations.yaml")   # latentmax's imports
     for rel in files:
         assert (fingerprint.REPO_ROOT / rel).is_file(), rel
 
@@ -241,16 +286,28 @@ def test_fingerprint_changes_when_a_highcast_helper_changes(tmp_path, monkeypatc
     ("UPDATE wf_runs SET dataset_fingerprint=NULL WHERE metric='high'", "dataset was built under different code"),
 ])
 def test_check_inputs_refuses_inconsistent_inputs(tmp_path, change, reason):
-    from citycast.evaluate import check_inputs
+    from citycast.evaluate import check_inputs, code_fingerprint
+    fp = code_fingerprint()
     with closing(db.connect(tmp_path / "h.db")) as c:
         _seed(c, good="city")
         _mark_runs(c)
-        check_inputs(c, "high")                                  # consistent: passes
-        check_inputs(c, "low")                                   # an empty finished run is consistent too
+        check_inputs(c, "high", fp)                              # consistent: passes
+        check_inputs(c, "low", fp)                               # an empty finished run is consistent too
         with c:
             c.execute(change)
         with pytest.raises(RuntimeError, match=reason):
-            check_inputs(c, "high")
+            check_inputs(c, "high", fp)
+
+
+def test_check_inputs_compares_against_the_fingerprint_it_is_given(tmp_path, monkeypatch):
+    import citycast.evaluate as ev
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c, good="city")
+        _mark_runs(c, fingerprint="A" * 64, dataset_fingerprint="A" * 64)
+        monkeypatch.setattr(ev, "code_fingerprint", lambda: pytest.fail("check_inputs hashed the code itself"))
+        ev.check_inputs(c, "high", "A" * 64)
+        with pytest.raises(RuntimeError, match="walk-forward ran under different code"):
+            ev.check_inputs(c, "high", "B" * 64)
 
 
 def test_warning_survives_reverting_to_original_code(tmp_path):

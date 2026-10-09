@@ -72,7 +72,10 @@ def _rows(test: pd.DataFrame, qmat, metric, variant, fold, k_by_station, now) ->
 
 def run(conn, df: pd.DataFrame, metric: str, stations: tuple[str, ...], now_iso,
         train_start: date = date(2022, 1, 1), first_fold: date = date(2022, 7, 1),
-        today: date | None = None, progress=print) -> int:
+        today: date | None = None, progress=print, fingerprint: str | None = None) -> int:
+    """`fingerprint` is the code hash the command took at its start; None hashes the code here, once, before
+    anything else runs. Nothing below hashes again, so an edit during a long run cannot change what is recorded."""
+    code_fp = fingerprint if fingerprint is not None else code_fingerprint()
     dataset_fp = df.attrs.get("fingerprint")
     df = df[df["metric"] == metric] if "metric" in df else df
     known = df[df["y"].notna()]
@@ -84,7 +87,7 @@ def run(conn, df: pd.DataFrame, metric: str, stations: tuple[str, ...], now_iso,
         conn.execute("DELETE FROM wf_predictions WHERE metric=?", (metric,))
         # finished_at stays NULL until the last fold: evaluate refuses a crashed or running run
         conn.execute("INSERT OR REPLACE INTO wf_runs VALUES (?,?,?,?,NULL,NULL)",
-                     (metric, code_fingerprint(), dataset_fp, now_iso()))
+                     (metric, code_fp, dataset_fp, now_iso()))
     written = 0
     for label, start, end in quarters(first_fold, today or date.today()):
         cutoff = start - timedelta(days=EMBARGO_D)

@@ -9,6 +9,7 @@ from pathlib import Path
 from citycast import coverage, dataset, db, evaluate, live, walkforward
 from citycast.backfill import run_chunks
 from citycast.features import FeatureContext
+from citycast.fingerprint import code_fingerprint
 from citycast.http import Paced
 from citycast.sources import cli_reports, kalshi_candles, kalshi_markets, mos, obs
 from citycast.stations import load_stations, series_index
@@ -68,6 +69,9 @@ def main(argv: list[str] | None = None) -> int:
     pr = sub.add_parser("predict")
     pr.add_argument("--no-refresh", action="store_true")
     args = p.parse_args(argv)
+    # One hash per command, taken before anything fingerprinted is read or built: it is stamped on the
+    # dataset, recorded by walkforward and logged by evaluate, so an edit mid-run cannot mismatch them.
+    fp = code_fingerprint() if args.cmd in ("dataset", "walkforward", "evaluate") else None
 
     stations = load_stations()
     if getattr(args, "station", None):
@@ -105,14 +109,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.cmd == "dataset":
             ctx = FeatureContext(conn, stations, args.db)
             df = dataset.build(ctx, args.metric, date.fromisoformat(args.since), date.today())
-            print(json.dumps({"rows": len(df), "path": str(dataset.save(df, args.metric))}))
+            print(json.dumps({"rows": len(df), "path": str(dataset.save(df, args.metric, fp))}))
             return 0
         if args.cmd == "walkforward":
-            n = walkforward.run(conn, dataset.load(args.metric), args.metric, tuple(sorted(stations)), utcnow_iso)
+            n = walkforward.run(conn, dataset.load(args.metric), args.metric, tuple(sorted(stations)), utcnow_iso,
+                                fingerprint=fp)
             print(json.dumps({"written": n}))
             return 0
         if args.cmd == "evaluate":
-            path = evaluate.evaluate_all(conn, REPORT_DIR / f"citycast-evaluation-{date.today()}.md", utcnow_iso)
+            path = evaluate.evaluate_all(conn, REPORT_DIR / f"citycast-evaluation-{date.today()}.md", utcnow_iso,
+                                         fingerprint=fp)
             print(json.dumps({"report": str(path)}))
             return 0
         if args.cmd == "train":
