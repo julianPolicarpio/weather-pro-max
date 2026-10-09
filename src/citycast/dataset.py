@@ -6,6 +6,7 @@ import pandas as pd
 
 from citycast.asof import asof_points
 from citycast.features import FEATURE_COLS
+from citycast.fingerprint import code_fingerprint
 
 DATASET_DIR = Path("data/citycast")
 KEY_COLS = ["station", "metric", "event_date", "asof_utc"]
@@ -34,6 +35,7 @@ def _path(metric: str) -> Path:
 
 
 def save(df: pd.DataFrame, metric: str) -> Path:
+    df.attrs["fingerprint"] = code_fingerprint()   # walkforward records it; evaluate refuses a stale one
     DATASET_DIR.mkdir(parents=True, exist_ok=True)
     df.to_pickle(_path(metric))
     return _path(metric)

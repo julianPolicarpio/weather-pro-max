@@ -22,3 +22,12 @@ def test_build_one_day_has_grid_rows_and_truth(tmp_path, monkeypatch):
         monkeypatch.setattr(dataset, "DATASET_DIR", tmp_path / "ds")
         dataset.save(df, "high")
         assert dataset.load("high").equals(df)
+
+
+def test_save_stamps_the_code_fingerprint_and_load_keeps_it(tmp_path, monkeypatch):
+    import pandas as pd
+
+    from citycast.fingerprint import code_fingerprint
+    monkeypatch.setattr(dataset, "DATASET_DIR", tmp_path / "ds")
+    dataset.save(pd.DataFrame({"station": ["KNYC"], "y": [47.0]}), "high")
+    assert dataset.load("high").attrs["fingerprint"] == code_fingerprint()

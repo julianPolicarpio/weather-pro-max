@@ -1,29 +1,40 @@
 """Selection, gate and market comparison (spec §3.8)."""
-import hashlib
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 
+from citycast.fingerprint import code_fingerprint
 from citycast.metrics import brier, cluster_bootstrap, rps
 from highcast.buckets import pmf_mass
 
 SELECTION_END = "2026-04-01"
 MARKET_STALE_H = 2
 REPORT_MIN_DAYS = 60
-FINGERPRINT_MODULES = ("asof", "features", "dataset", "qmodel", "metrics",
-                       "walkforward", "evaluate")
 
 
-def code_fingerprint() -> str:
-    """sha256 over the modelling code, so a report can tell whether the report period was first
-    scored under different code (spec §3.8 design freeze)."""
-    h = hashlib.sha256()
-    for name in FINGERPRINT_MODULES:
-        h.update(name.encode())
-        h.update((Path(__file__).parent / f"{name}.py").read_bytes())
-    return h.hexdigest()
+def check_inputs(conn, metric: str) -> None:
+    """Refuse to score wf_predictions that are partial (a crashed or running walk-forward) or were
+    produced by a dataset or walk-forward under code other than the current code (spec §3.8)."""
+    run = conn.execute("SELECT fingerprint, dataset_fingerprint, started_at, finished_at, rows FROM wf_runs "
+                       "WHERE metric=?", (metric,)).fetchone()
+    if run is None:
+        raise RuntimeError(f"{metric}: no walk-forward run is recorded; run `citycast walkforward --metric {metric}`")
+    fp, ds_fp, started, finished, rows = run
+    if finished is None:
+        raise RuntimeError(f"{metric}: the walk-forward run started {started} never finished; rerun it")
+    n = conn.execute("SELECT COUNT(*) FROM wf_predictions WHERE metric=?", (metric,)).fetchone()[0]
+    if rows != n:
+        raise RuntimeError(f"{metric}: wf_predictions holds {n} rows but the walk-forward run wrote {rows}; "
+                           "rerun it")
+    cur = code_fingerprint()
+    if fp != cur:
+        raise RuntimeError(f"{metric}: walk-forward ran under different code ({fp[:12]}, current {cur[:12]}); "
+                           "rerun it")
+    if ds_fp != cur:
+        raise RuntimeError(f"{metric}: the dataset was built under different code ({(ds_fp or 'none')[:12]}, "
+                           f"current {cur[:12]}); rebuild it with `citycast dataset` and rerun walk-forward")
 
 
 def _truth(conn, metric) -> dict:

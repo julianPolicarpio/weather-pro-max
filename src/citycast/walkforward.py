@@ -6,6 +6,7 @@ from datetime import date, timedelta
 import pandas as pd
 
 from citycast import db
+from citycast.fingerprint import code_fingerprint
 from citycast.metrics import normal_pmf, rps
 from citycast.qmodel import QUANTILES, QuantileModel, pmf_from_quantiles
 
@@ -71,6 +72,7 @@ def _rows(test: pd.DataFrame, qmat, metric, variant, fold, k_by_station, now) ->
 def run(conn, df: pd.DataFrame, metric: str, stations: tuple[str, ...], now_iso,
         train_start: date = date(2022, 1, 1), first_fold: date = date(2022, 7, 1),
         today: date | None = None, progress=print) -> int:
+    dataset_fp = df.attrs.get("fingerprint")
     df = df[df["metric"] == metric] if "metric" in df else df
     known = df[df["y"].notna()]
     if (known.groupby(["station", "event_date"])["y"].nunique() > 1).any():
@@ -79,6 +81,9 @@ def run(conn, df: pd.DataFrame, metric: str, stations: tuple[str, ...], now_iso,
              .drop_duplicates(["station", "event_date"]).itertuples(index=False)}
     with conn:                       # a run is reproducible from the current code, never from stale rows
         conn.execute("DELETE FROM wf_predictions WHERE metric=?", (metric,))
+        # finished_at stays NULL until the last fold: evaluate refuses a crashed or running run
+        conn.execute("INSERT OR REPLACE INTO wf_runs VALUES (?,?,?,?,NULL,NULL)",
+                     (metric, code_fingerprint(), dataset_fp, now_iso()))
     written = 0
     for label, start, end in quarters(first_fold, today or date.today()):
         cutoff = start - timedelta(days=EMBARGO_D)
@@ -110,4 +115,6 @@ def run(conn, df: pd.DataFrame, metric: str, stations: tuple[str, ...], now_iso,
         with conn:
             written += db.upsert(conn, "wf_predictions", rows)
         progress(f"{metric} {label}: {len(rows)} predictions")
+    with conn:
+        conn.execute("UPDATE wf_runs SET finished_at=?, rows=? WHERE metric=?", (now_iso(), written, metric))
     return written

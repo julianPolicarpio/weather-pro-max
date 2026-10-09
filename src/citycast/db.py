@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS model_choice (station TEXT, metric TEXT, variant TEXT
   crps_sel REAL, mos_crps_sel REAL, gate_ci_hi REAL, sel_pass INTEGER NOT NULL,
   crps_rep REAL, mos_crps_rep REAL, rep_days INTEGER NOT NULL, gate_pass INTEGER NOT NULL,
   decided_at TEXT NOT NULL, PRIMARY KEY (station, metric));
+CREATE TABLE IF NOT EXISTS wf_runs (metric TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, dataset_fingerprint TEXT,
+  started_at TEXT NOT NULL, finished_at TEXT, rows INTEGER);
 CREATE TABLE IF NOT EXISTS eval_log (run_at TEXT, metric TEXT, fingerprint TEXT NOT NULL,
   report_scored INTEGER NOT NULL, PRIMARY KEY (run_at, metric));
 CREATE TABLE IF NOT EXISTS live_predictions (station TEXT, metric TEXT, event_date TEXT,
