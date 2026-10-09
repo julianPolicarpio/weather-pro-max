@@ -80,7 +80,9 @@ class ForecastBot:
 
     def pmf_for_event(self, markets: list[Market], snapshot: Snapshot) -> dict[str, float] | None:
         """The pmf half of `forecast_for_event`. A subclass overrides this or
-        `forecast_for_event`; each defaults to the other, so overriding neither recurses."""
+        `forecast_for_event`; each defaults to the other."""
+        if type(self).forecast_for_event is ForecastBot.forecast_for_event:
+            raise NotImplementedError(f"{type(self).__name__} must override pmf_for_event or forecast_for_event")
         return self.forecast_for_event(markets, snapshot)[0]
 
     def forecast_for_event(self, markets: list[Market],
