@@ -121,11 +121,16 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.cmd == "predict":
             if not args.no_refresh:
-                paced, today = Paced(), date.today()
+                paced, now_utc = Paced(), datetime.now(timezone.utc)
+                today = now_utc.date()                    # UTC, as backfill: local dates shift chunk edges
+                complete_before = today - timedelta(days=COMPLETE_MARGIN_D)
+                refresh = [_chunks_for("cli", paced, conn, stations, today - timedelta(days=7), today,
+                                       complete_before=complete_before),
+                           mos.recent_chunks(paced, stations, now_utc, utcnow_iso),   # never logged
+                           obs.recent_chunks(paced, stations, now_utc, utcnow_iso)]
                 refresh_errors = []
-                for source in ("cli", "mos", "obs"):
-                    s = run_chunks(conn, _chunks_for(source, paced, conn, stations, today - timedelta(days=7), today),
-                                   now_iso=utcnow_iso, progress=lambda m: None)
+                for chunks in refresh:
+                    s = run_chunks(conn, chunks, now_iso=utcnow_iso, progress=lambda m: None)
                     refresh_errors += s["errors"]
                 if refresh_errors:   # stale inputs must never feed the paper-trading bot
                     print(json.dumps({"refresh_errors": refresh_errors}))

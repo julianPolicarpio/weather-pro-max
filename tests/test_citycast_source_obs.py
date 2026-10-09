@@ -1,6 +1,6 @@
-from datetime import date
+from datetime import date, datetime, timezone
 
-from citycast.sources.obs import chunks, obs_rows
+from citycast.sources.obs import chunks, obs_rows, recent_chunks
 from citycast.stations import Station
 
 ST = Station("KNYC", "NYC", "NY_ASOS", "OKX", 40.78, -73.97, 40.0, "America/New_York", -5,
@@ -42,3 +42,21 @@ def test_complete_before_decides_current_not_today():
     assert cur["KNYC:2026-09"] is True
     cur = {c.key: c.current for c in chunks(*args, complete_before=date(2026, 10, 2))}
     assert cur["KNYC:2026-09"] is False
+
+
+def test_recent_chunks_fetch_the_last_days_and_are_never_logged():
+    asked = []
+
+    class FakePaced:
+        def get_text(self, url, params):
+            asked.append(params)
+            return TEXT
+    now = datetime(2026, 10, 1, 2, 0, tzinfo=timezone.utc)          # spans the month boundary
+    cs = recent_chunks(FakePaced(), {"KNYC": ST}, now, lambda: F)
+    assert [c.key for c in cs] == ["KNYC:recent"] and cs[0].current and cs[0].source == "obs"
+    table, rows = cs[0].run()[0]
+    assert table == "obs" and len(rows) == 2
+    p = asked[0]
+    assert (p["year1"], p["month1"], p["day1"]) == (2026, 9, 28)
+    assert (p["year2"], p["month2"], p["day2"]) == (2026, 10, 2)
+    assert p["station"] == "NYC" and p["tz"] == "Etc/UTC" and p["report_type"] == [3, 4]
