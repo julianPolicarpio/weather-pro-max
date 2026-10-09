@@ -1,6 +1,7 @@
-from datetime import date
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
-from citycast.sources.mos import chunks, parse_mos_runs
+from citycast.sources.mos import chunks, parse_mos_runs, recent_chunks
 from citycast.stations import Station
 
 ST = Station("KNYC", "NYC", "NY_ASOS", "OKX", 40.78, -73.97, 40.0, "America/New_York", -5,
@@ -67,3 +68,24 @@ def test_complete_before_decides_current_not_today():
     assert cur["KNYC:MEX:2026-01-01"] is True
     cur = {c.key: c.current for c in chunks(*args, complete_before=date(2026, 7, 2), **kw)}
     assert cur["KNYC:MEX:2026-01-01"] is False
+
+
+def test_recent_chunks_fetch_the_last_days_of_runs_and_are_never_logged():
+    asked = []
+
+    class FakePaced:
+        def get_text(self, url, params):
+            asked.append(params)
+            return MEX
+    now = datetime(2026, 10, 9, 22, 37, tzinfo=ZoneInfo("Asia/Manila"))          # 14:37Z
+    cs = recent_chunks(FakePaced(), {"KNYC": ST}, now, lambda: F, models=("MEX", "NBS"))
+    assert [c.key for c in cs] == ["KNYC:MEX:recent", "KNYC:NBS:recent"]
+    assert all(c.current for c in cs) and {c.source for c in cs} == {"mos"}
+    table, rows = cs[0].run()[0]
+    assert table == "mos_runs" and rows
+    assert asked == [{"station": "KNYC", "model": "MEX", "sts": "2026-10-06T14:37Z",
+                      "ets": "2026-10-10T14:37Z", "format": "csv"}]
+    assert len(recent_chunks(FakePaced(), {"KNYC": ST}, now, lambda: F)) == 4          # every model by default
+    recent_chunks(FakePaced(), {"KNYC": ST}, now.astimezone(timezone.utc), lambda: F, days=5,
+                  models=("GFS",))[0].run()
+    assert asked[-1]["sts"] == "2026-10-04T14:37Z"

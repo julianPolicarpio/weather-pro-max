@@ -106,6 +106,36 @@ def test_predict_proceeds_when_refresh_clean(tmp_path, monkeypatch):
     assert cli.main(["--db", str(tmp_path / "h.db"), "predict"]) == 0
 
 
+def test_predict_refresh_passes_utc_today_two_day_margin_and_recent_chunks(tmp_path, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    seen = {"sources": []}
+
+    def fake_chunks(source, paced, conn, stations, since, today, **kw):
+        seen["sources"].append(source)
+        seen.update(today=today, complete_before=kw.get("complete_before"))
+        return []
+
+    def fake_recent(name):
+        def recent(paced, stations, now, now_iso, **kw):
+            seen[name] = now
+            return []
+        return recent
+    monkeypatch.setattr(cli, "Paced", lambda *a, **k: object())
+    monkeypatch.setattr(cli, "_chunks_for", fake_chunks)
+    monkeypatch.setattr(cli.mos, "recent_chunks", fake_recent("mos_now"))
+    monkeypatch.setattr(cli.obs, "recent_chunks", fake_recent("obs_now"))
+    monkeypatch.setattr(cli, "run_chunks", lambda *a, **k: {"done": 0, "skipped": 0, "rows": 0, "errors": []})
+    monkeypatch.setattr(cli.live, "predict", lambda *a, **k: 0)
+    assert cli.main(["--db", str(tmp_path / "h.db"), "predict"]) == 0
+    today = datetime.now(timezone.utc).date()
+    assert seen["sources"] == ["cli"]               # MOS and obs refresh through never-logged recent chunks
+    assert seen["today"] == today
+    assert seen["complete_before"] == today - timedelta(days=cli.COMPLETE_MARGIN_D)
+    for name in ("mos_now", "obs_now"):
+        assert seen[name].utcoffset() == timedelta(0)
+        assert abs(datetime.now(timezone.utc) - seen[name]) < timedelta(minutes=1)
+
+
 def test_evaluate_writes_report_to_patched_dir(tmp_path, monkeypatch, capsys):
     dbp = tmp_path / "h.db"
     with closing(db.connect(dbp)) as c:

@@ -7,6 +7,7 @@ n_x, so the max/min is taken over the run's 3-hourly `tmp` points inside the cli
 import csv
 import io
 from datetime import date, datetime, timedelta, timezone
+from functools import partial
 from zoneinfo import ZoneInfo
 
 from citycast.backfill import Chunk
@@ -57,6 +58,11 @@ def _half_years(since: date, today: date):
         start = end
 
 
+def _fetch(paced, st, model: str, sts: str, ets: str, now_iso) -> list[tuple[str, list[dict]]]:
+    text = paced.get_text(IEM_MOS, {"station": st.icao, "model": model, "sts": sts, "ets": ets, "format": "csv"})
+    return [("mos_runs", parse_mos_runs(text, st, model, now_iso()))]
+
+
 def chunks(paced, stations: dict, since: date, today: date, now_iso, models=MODELS,
            complete_before: date | None = None) -> list[Chunk]:
     complete_before = complete_before or today
@@ -64,11 +70,17 @@ def chunks(paced, stations: dict, since: date, today: date, now_iso, models=MODE
     for st in stations.values():
         for model in models:
             for a, b in _half_years(since, today):
-                def run(st=st, model=model, a=a, b=b):
-                    text = paced.get_text(IEM_MOS, {"station": st.icao, "model": model,
-                                                    "sts": f"{a.isoformat()}T00:00Z",
-                                                    "ets": f"{b.isoformat()}T00:00Z",
-                                                    "format": "csv"})
-                    return [("mos_runs", parse_mos_runs(text, st, model, now_iso()))]
+                run = partial(_fetch, paced, st, model, f"{a.isoformat()}T00:00Z", f"{b.isoformat()}T00:00Z",
+                              now_iso)
                 out.append(Chunk("mos", f"{st.icao}:{model}:{a.isoformat()}", b > complete_before, run))
     return out
+
+
+def recent_chunks(paced, stations: dict, now: datetime, now_iso, days: int = 3, models=MODELS) -> list[Chunk]:
+    """Runs issued in the last `days` days, for `citycast predict`: current, so never logged (a logged
+    chunk would be skipped by the backfill), and small (a half-year chunk refetches months per call)."""
+    now = now.astimezone(timezone.utc)
+    sts = (now - timedelta(days=days)).strftime("%Y-%m-%dT%H:%MZ")
+    ets = (now + timedelta(days=1)).strftime("%Y-%m-%dT%H:%MZ")
+    return [Chunk("mos", f"{st.icao}:{model}:recent", True, partial(_fetch, paced, st, model, sts, ets, now_iso))
+            for st in stations.values() for model in models]
