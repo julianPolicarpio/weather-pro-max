@@ -11,10 +11,19 @@ data/
 # Agent scratch: subagent snapshots, review diffs, replay DBs
 .superpowers/
 
-# Vendored agent skills and local agent settings
+# AI-agent files: instructions, settings, notes and session handoffs stay local
 .agents/
-.claude/skills/
-.claude/settings.local.json
+.ai/
+.claude/
+.codex/
+AGENTS.md
+CLAUDE.md
+skills-lock.json
+HANDOFF*.md
+
+# Live configs hold secrets (Discord webhooks, API tokens); commit the *.example.yaml copies instead
+config/klax.yaml
+config/kmia.yaml
 
 # OS
 .DS_Store
