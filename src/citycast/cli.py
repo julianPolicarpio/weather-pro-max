@@ -112,9 +112,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"written": n}))
             return 0
         if args.cmd == "evaluate":
-            for metric in ("high", "low"):
-                evaluate.select_and_gate(conn, metric, utcnow_iso)
-            path = evaluate.write_report(conn, REPORT_DIR / f"citycast-evaluation-{date.today()}.md")
+            path = evaluate.evaluate_all(conn, REPORT_DIR / f"citycast-evaluation-{date.today()}.md", utcnow_iso)
             print(json.dumps({"report": str(path)}))
             return 0
         if args.cmd == "train":

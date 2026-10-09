@@ -5,7 +5,7 @@ from contextlib import closing
 import pytest
 
 from citycast import db
-from citycast.evaluate import market_brier, select_and_gate
+from citycast.evaluate import choose_and_gate, evaluate_all, market_brier, scored
 
 F = "2026-10-07T00:00:00+00:00"
 
@@ -34,21 +34,35 @@ def _seed(c, good="city", rep_days=60, rep_good=True):
         db.upsert(c, "wf_predictions", preds)
 
 
+def _mark_runs(c, **over):
+    """A finished walk-forward record for both metrics that matches wf_predictions and the current code."""
+    from citycast.evaluate import code_fingerprint
+    fp = code_fingerprint()
+    with c:
+        for metric in ("high", "low"):
+            n = c.execute("SELECT COUNT(*) FROM wf_predictions WHERE metric=?", (metric,)).fetchone()[0]
+            db.upsert(c, "wf_runs", [{"metric": metric, "fingerprint": fp, "dataset_fingerprint": fp,
+                                      "started_at": F, "finished_at": F, "rows": n, **over}])
+
+
 def test_selects_better_variant_and_passes_gate(tmp_path):
     with closing(db.connect(tmp_path / "h.db")) as c:
         _seed(c, good="city")
-        out = select_and_gate(c, "high", lambda: F)
+        out = choose_and_gate(c, "high")
         assert out[0]["variant"] == "city" and out[0]["gate_pass"] == 1
-        row = c.execute("SELECT variant, gate_pass FROM model_choice WHERE station='KNYC'").fetchone()
-        assert tuple(row) == ("city", 1)
-        log = c.execute("SELECT metric, report_scored FROM eval_log").fetchall()
-        assert [tuple(r) for r in log] == [("high", 1)]
+        assert c.execute("SELECT COUNT(*) FROM model_choice").fetchone()[0] == 0   # computes, never writes
+        _mark_runs(c)
+        evaluate_all(c, tmp_path / "r.md", lambda: F)
+        row = c.execute("SELECT variant, gate_pass, decided_at FROM model_choice WHERE station='KNYC'").fetchone()
+        assert tuple(row) == ("city", 1, F)
+        log = c.execute("SELECT metric, report_scored FROM eval_log ORDER BY metric").fetchall()
+        assert [tuple(r) for r in log] == [("high", 1), ("low", 0)]
 
 
 def test_gate_fails_when_model_loses_in_report_period(tmp_path):
     with closing(db.connect(tmp_path / "h.db")) as c:
         _seed(c, good="city", rep_good=False)
-        out = select_and_gate(c, "high", lambda: F)
+        out = choose_and_gate(c, "high")
         assert out[0]["sel_pass"] == 1 and out[0]["gate_pass"] == 0
         assert out[0]["crps_rep"] > out[0]["mos_crps_rep"]
 
@@ -56,7 +70,7 @@ def test_gate_fails_when_model_loses_in_report_period(tmp_path):
 def test_gate_fails_with_too_few_report_days(tmp_path):
     with closing(db.connect(tmp_path / "h.db")) as c:
         _seed(c, good="city", rep_days=59)
-        out = select_and_gate(c, "high", lambda: F)
+        out = choose_and_gate(c, "high")
         assert out[0]["sel_pass"] == 1 and out[0]["rep_days"] == 59 and out[0]["gate_pass"] == 0
 
 
@@ -73,20 +87,21 @@ def test_variant_choice_ignores_report_period(tmp_path):
                                         "final": 1, "issued_utc": None, "raw": "{}", "fetched_at": F}
                                        for r in rows[::3]])
             db.upsert(c, "wf_predictions", rows)
-        out = select_and_gate(c, "high", lambda: F)
+        out = choose_and_gate(c, "high")
         assert out[0]["variant"] == "city"                      # chosen on selection only
         assert out[0]["gate_pass"] == 0                         # and then fails confirmation
 
 
 def test_report_warns_when_code_changed_after_report_was_scored(tmp_path):
-    from citycast.evaluate import code_fingerprint, write_report
+    from citycast.evaluate import code_fingerprint
     with closing(db.connect(tmp_path / "h.db")) as c:
         _seed(c, good="city")
-        select_and_gate(c, "high", lambda: F)
-        assert "WARNING" not in write_report(c, tmp_path / "r.md").read_text()
+        _mark_runs(c)
+        assert "WARNING" not in evaluate_all(c, tmp_path / "r.md", lambda: F).read_text()
+        assert "WARNING" not in evaluate_all(c, tmp_path / "r.md", lambda: "2026-10-08T00:00:00+00:00").read_text()
         with c:
             c.execute("UPDATE eval_log SET fingerprint='0000'")       # first scoring ran on other code
-        assert "WARNING" in write_report(c, tmp_path / "r.md").read_text()
+        assert "WARNING" in evaluate_all(c, tmp_path / "r.md", lambda: "2026-10-09T00:00:00+00:00").read_text()
         assert len(code_fingerprint()) == 64
 
 
@@ -106,7 +121,6 @@ def test_canonical_events_picks_one_event_per_city_day(tmp_path):
 def test_market_brier_uses_fresh_candle_only(tmp_path):
     with closing(db.connect(tmp_path / "h.db")) as c:
         _seed(c, good="city")
-        select_and_gate(c, "high", lambda: F)
         with c:
             db.upsert(c, "kalshi_markets", [{
                 "ticker": "M1", "series": "KXHIGHNY", "event_ticker": "E1", "station": "KNYC",
@@ -118,23 +132,76 @@ def test_market_brier_uses_fresh_candle_only(tmp_path):
                  "volume": 1.0, "open_interest": 1.0},
                 {"ticker": "M1", "end_utc": "2025-01-01T08:00:00+00:00", "yes_bid": 0.10, "yes_ask": 0.20,
                  "volume": 1.0, "open_interest": 1.0}])
-        res = market_brier(c, "high")
-        mean, lo, hi, n = res["KNYC"]
+        res = market_brier(c, "high", {"KNYC": "city"})
+        mean, lo, hi, n = res["selection"]["KNYC"]
         # model p = 1.0 (all mass on 50-51), market mid 0.45 from the 11:00 candle; won = 1
         assert n == 1 and abs(mean - (0.0 - 0.3025)) < 1e-9
+        assert res["report"] == {}                              # the market is in the selection period
+        # the choice argument picks the variant: shared puts 0.5 on 50-51
+        mean, *_ = market_brier(c, "high", {"KNYC": "shared"})["selection"]["KNYC"]
+        assert abs(mean - (0.25 - 0.3025)) < 1e-9
 
 
-def test_select_and_gate_clears_stale_choices_for_this_metric_only(tmp_path):
-    stale = "INSERT INTO model_choice VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+STALE = "INSERT INTO model_choice VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
+
+
+def test_evaluate_all_replaces_stale_choices_of_both_metrics(tmp_path):
     with closing(db.connect(tmp_path / "h.db")) as c:
         _seed(c, good="city")
+        _mark_runs(c)
         with c:
-            c.execute(stale, ("KSFO", "high", "city", 1.0, 2.0, -0.1, 1, 1.0, 2.0, 70, 1, F))
-            c.execute(stale, ("KSFO", "low", "city", 1.0, 2.0, -0.1, 1, 1.0, 2.0, 70, 1, F))
-        select_and_gate(c, "high", lambda: F)
-        rows = {(r[0], r[1]) for r in c.execute("SELECT station, metric FROM model_choice")}
-        assert ("KSFO", "high") not in rows and ("KNYC", "high") in rows
-        assert ("KSFO", "low") in rows
+            c.execute(STALE, ("KSFO", "high", "city", 1.0, 2.0, -0.1, 1, 1.0, 2.0, 70, 1, F))
+            c.execute(STALE, ("KSFO", "low", "city", 1.0, 2.0, -0.1, 1, 1.0, 2.0, 70, 1, F))
+        evaluate_all(c, tmp_path / "r.md", lambda: F)
+        assert {(r[0], r[1]) for r in c.execute("SELECT station, metric FROM model_choice")} == {("KNYC", "high")}
+
+
+def test_evaluate_all_commits_nothing_when_a_computation_fails(tmp_path, monkeypatch):
+    import citycast.evaluate as ev
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c, good="city")
+        _mark_runs(c)
+        with c:
+            c.execute(STALE, ("KSFO", "high", "city", 1.0, 2.0, -0.1, 1, 1.0, 2.0, 70, 1, F))
+
+        def boom(*a, **k):
+            raise MemoryError("market_brier ran out of memory")
+        monkeypatch.setattr(ev, "market_brier", boom)
+        with pytest.raises(MemoryError):
+            evaluate_all(c, tmp_path / "r.md", lambda: F)
+        assert [tuple(r) for r in c.execute("SELECT station, metric FROM model_choice")] == [("KSFO", "high")]
+        assert c.execute("SELECT COUNT(*) FROM eval_log").fetchone()[0] == 0     # report period not spent
+        assert not (tmp_path / "r.md").exists()
+
+
+def test_evaluate_all_checks_both_metrics_before_scoring(tmp_path, monkeypatch):
+    import citycast.evaluate as ev
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c, good="city")
+        _mark_runs(c)
+        with c:
+            c.execute("UPDATE wf_runs SET finished_at=NULL WHERE metric='low'")
+        monkeypatch.setattr(ev, "scored", lambda *a, **k: pytest.fail("scored before the inputs were checked"))
+        with pytest.raises(RuntimeError, match="low: the walk-forward run .* never finished"):
+            evaluate_all(c, tmp_path / "r.md", lambda: F)
+        assert c.execute("SELECT COUNT(*) FROM model_choice").fetchone()[0] == 0
+        assert c.execute("SELECT COUNT(*) FROM eval_log").fetchone()[0] == 0
+
+
+def test_scored_streams_without_pmfs_unless_asked(tmp_path):
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c, good="city")
+        df = scored(c, "high")
+        assert list(df.columns) == ["station", "metric", "event_date", "asof_utc", "variant", "rps", "y", "run_ext"]
+        assert "pmf" not in df.columns
+        assert len(df) == 360 and set(df["variant"]) == {"city", "shared", "mosnorm"}
+        assert df["run_ext"].isna().all()
+        sub = scored(c, "high", variants=("city", "mosnorm"), keep_pmf=True)
+        assert "pmf" in sub.columns and len(sub) == 240 and set(sub["variant"]) == {"city", "mosnorm"}
+        assert sub["pmf"].iloc[0] in ({50: 0.9, 51: 0.1}, {47: 0.5, 53: 0.5})
+        assert scored(c, "high", station="KSFO").empty
+        empty = scored(c, "low")                                 # no rows: still filterable by date
+        assert empty[empty["event_date"] < "2026-04-01"].empty
 
 
 def test_fingerprint_covers_all_modelling_files():
@@ -164,17 +231,6 @@ def test_fingerprint_changes_when_a_highcast_helper_changes(tmp_path, monkeypatc
     assert fingerprint.code_fingerprint() != before
 
 
-def _mark_runs(c, **over):
-    """A finished walk-forward record for both metrics that matches wf_predictions and the current code."""
-    from citycast.evaluate import code_fingerprint
-    fp = code_fingerprint()
-    with c:
-        for metric in ("high", "low"):
-            n = c.execute("SELECT COUNT(*) FROM wf_predictions WHERE metric=?", (metric,)).fetchone()[0]
-            db.upsert(c, "wf_runs", [{"metric": metric, "fingerprint": fp, "dataset_fingerprint": fp,
-                                      "started_at": F, "finished_at": F, "rows": n, **over}])
-
-
 @pytest.mark.parametrize("change, reason", [
     ("DELETE FROM wf_runs WHERE metric='high'", "no walk-forward run"),
     ("UPDATE wf_runs SET finished_at=NULL WHERE metric='high'", "never finished"),
@@ -198,21 +254,21 @@ def test_check_inputs_refuses_inconsistent_inputs(tmp_path, change, reason):
 
 
 def test_warning_survives_reverting_to_original_code(tmp_path):
-    from citycast.evaluate import code_fingerprint, write_report
+    from citycast.evaluate import code_fingerprint
     cur = code_fingerprint()
     with closing(db.connect(tmp_path / "h.db")) as c:
+        _mark_runs(c)
         with c:
             c.executemany("INSERT INTO eval_log VALUES (?,?,?,?)", [
                 ("2026-10-01T00:00:00", "high", cur, 1),
                 ("2026-10-02T00:00:00", "high", "0000", 1),
                 ("2026-10-03T00:00:00", "high", cur, 1)])
-        assert "WARNING" in write_report(c, tmp_path / "r.md").read_text()
+        assert "WARNING" in evaluate_all(c, tmp_path / "r.md", lambda: "2026-10-04T00:00:00").read_text()
 
 
 def test_market_brier_uses_kalshi_result_not_cli_bracket(tmp_path):
     with closing(db.connect(tmp_path / "h.db")) as c:
         _seed(c, good="city")
-        select_and_gate(c, "high", lambda: F)
         with c:
             db.upsert(c, "kalshi_markets", [{
                 "ticker": "M1", "series": "KXHIGHNY", "event_ticker": "E1", "station": "KNYC",
@@ -222,14 +278,15 @@ def test_market_brier_uses_kalshi_result_not_cli_bracket(tmp_path):
             db.upsert(c, "kalshi_candles", [
                 {"ticker": "M1", "end_utc": "2025-01-01T11:00:00+00:00", "yes_bid": 0.40, "yes_ask": 0.50,
                  "volume": 1.0, "open_interest": 1.0}])
-        mean, _, _, n = market_brier(c, "high")["KNYC"]
+        mean, _, _, n = market_brier(c, "high", {"KNYC": "city"})["selection"]["KNYC"]
         # CLI truth 50 is in [50,51] but Kalshi settled "no": won=0, model p=1 -> 1.0 - 0.45**2
         assert n == 1 and abs(mean - (1.0 - 0.2025)) < 1e-9
 
 
 def test_report_labels_selection_columns_in_sample(tmp_path):
-    from citycast.evaluate import write_report
     with closing(db.connect(tmp_path / "h.db")) as c:
         _seed(c, good="city")
-        select_and_gate(c, "high", lambda: F)
-        assert "in-sample for the variant choice" in write_report(c, tmp_path / "r.md").read_text()
+        _mark_runs(c)
+        text = evaluate_all(c, tmp_path / "r.md", lambda: F).read_text()
+        assert "in-sample for the variant choice" in text and "| KNYC | city |" in text
+
