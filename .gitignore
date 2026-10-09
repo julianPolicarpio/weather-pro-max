@@ -10,6 +10,11 @@ data/
 
 
 .agents/
+HANDOFF*.md
+
+# Live configs hold secrets (Discord webhooks, API tokens); commit the *.example.yaml copies instead
+config/klax.yaml
+config/kmia.yaml
 
 # OS
 .DS_Store

@@ -1,0 +1,110 @@
+# Copy to config/klax.yaml and fill in secrets locally. config/klax.yaml is git-ignored.
+# THE ORDER BOT IS OFF (2026-08-02, Julian's call: focus on the paper demo
+# account). This is the OUTERMOST of three independent switches -- arming still
+# needs the HIGHCAST_TRADING literal AND an unexpired HIGHCAST_TRADING_UNTIL.
+# With this false the bot is never invoked, so it cannot be armed by accident.
+#
+# Cost of switching it off: `bot_orders` stops accruing. Acceptable because
+# `signals` (~250 rows/day, all four markets) and `app_bets` keep accruing from
+# the same wake cycle and carry strictly more information -- the demo account
+# replays those. Set back to true if the bot's own decision log is ever needed.
+orderbot_enabled: false
+
+station:
+  key: klax
+  name: Los Angeles Intl Airport
+  icao: KLAX
+  iem_id: LAX
+  iem_network: CA_ASOS
+  wfo: LOX
+  lat: 33.9425
+  lon: -118.4081
+  tz: America/Los_Angeles
+  std_utc_offset: -8
+  # KLAX forecast + fire-weather zones per api.weather.gov/points. CAZ366
+  # ("Los Angeles County Coast") is the current zone; CAZ041 is the same
+  # area under the pre-2023 LOX zone numbering. Both are required for full
+  # VTEC archive coverage: CAZ041 matches zero events from 2023 onward,
+  # and CAZ366 matches ~zero events before the 2023 renumbering.
+  nws_zones: ["CAZ366", "CAZ041"]
+  # Kalshi series ticker for the daily LAX high-temp market
+  # (https://kalshi.com/markets/kxhighlax). Empty string disables the live
+  # market-structure integration (dashboard falls back to synthetic buckets).
+  kalshi_series: KXHIGHLAX
+  # Kalshi series ticker for the daily LAX low-temp market.
+  kalshi_low_series: KXLOWTLAX
+display_tz: Asia/Manila
+synoptic_token: ""
+# Discord webhook for bet alerts. Create one in Discord:
+#   Server Settings -> Integrations -> Webhooks -> New Webhook -> Copy URL
+# Leave empty to disable notifications entirely.
+discord_webhook_url: ""
+db_path: data/highcast.db
+# Decision-support staking policy (The policy sets the rule + amount; the human
+# places the trade). Conservative by design — quarter-Kelly with a hard 5% cap —
+# to curb emotional overbetting, not to chase returns. SET `bankroll` to the
+# amount you have actually allocated to this and are willing to lose; while it is
+# 0 the tool sizes every bet to $0 and tells you to set it. These are NOT a
+# promise of profit: if the tradeable-win scoreboard doesn't show a real edge,
+# the correct output is "do not bet."
+staking:
+  bankroll: 0.0            # <-- set this yourself (in `currency`); 0 = sizing disabled
+  kelly_fraction: 0.25     # quarter-Kelly
+  max_stake_frac: 0.05     # never risk >5% of bankroll on one bucket
+  min_edge: 0.03           # >=3 percentage-points calibrated-model-vs-market edge.
+                           # LOWERED FROM 0.05 on 2026-07-31, deliberately, to
+                           # take accurate-but-small edges. The floor is the FEE,
+                           # not a preference: at 1 contract Kalshi's fee rounds
+                           # up to 2c at every price, so a 2-point edge nets
+                           # exactly zero and anything under it loses. 3 points
+                           # is the smallest edge that actually pays.
+                           # Measured context: the app's big-edge bets went
+                           # 2W-4L while its no-edge skips went 6W-0L, so a WIDE
+                           # gap to the market is a warning, not an opportunity.
+  max_spread: 0.10         # skip if the bucket's bid/ask spread > 10c (too thin — slippage eats the edge)
+  min_confidence: 0.80     # model's top 2F bucket must be >=80% to place at all
+  stability_readings: 3    # consecutive reads (~15min) for the informational "stable" flag
+  # Cutoffs MUST sit after their metric's `gating.MIN_DECISION_HOUR` (LOW 11:00,
+  # HIGH 16:00 station-local) or the window and the accuracy gate never overlap
+  # and the market is blocked permanently — the exact failure the removed
+  # `intraday_hour_trained` veto caused. `tests/test_decision_hour.py` asserts
+  # the pair stays consistent. Manila = LA + 15h during PDT.
+  personal_cutoff: "09:00" # HIGH cutoff, Manila (= LA 18:00; knee is LA 16:00, hit 83% vs 46% at 09:00)
+  low_personal_cutoff: "04:00" # LOW cutoff, Manila (= LA 13:00; knee is LA 11:00, hit 85% vs 67% at 06:00)
+  currency: USD
+
+calibration:
+  mode: "off"   # off | width | center_width — regime seam calibration (default off; set by backtest)
+
+model:
+  # Matched-hour training bandwidth, LOW ONLY. Measured 2026-08-02 on KLAX
+  # itself (`scripts/klax_bandwidth_eval.py`, nested walk-forward, 15 folds,
+  # n=1306 days, positive control passed):
+  #   LOW   dMAE +0.000 [-0.009,+0.008]   dHIT +0.5 [-0.6,+1.6]
+  #         churn 1.279 -> 1.248  (-0.031 [-0.053,-0.010])   -> SHIP
+  #   HIGH  dMAE -0.006  dHIT -0.7 [-1.9,+0.4]  churn -0.012 -> NEUTRAL, stays 0
+  # The gain is CHURN ONLY -- 2.4% fewer modal-bucket flips across h5/h6/h7, so
+  # the h5 preview contradicts the h6 commit less often. NOT an accuracy win:
+  # the observed |dMAE| (0.000F) is below the comparison's own resolving floor
+  # (0.008F) at this n. The HIGH is deliberately absent -- it did not pass.
+  intraday_hour_bandwidth_low: 1
+  hybrid_anchor: true   # blend a residual(MOS)-target model into the hot tail (>=82F);
+                        # below 82F identical to the plain model. See ACCURACY_IMPROVEMENTS.md §7.
+  intraday_residual_low: true    # LOW nowcast regresses the undercut, not the temperature
+                                 # (measured: MAE 0.806->0.765, CRPS 0.561->0.526, N=1333)
+  intraday_residual_high: false  # untested for the HIGH; its nowcast isn't read in-window
+
+# DEAD MAN'S SWITCH. URL of a hosted check that alerts when pings STOP arriving.
+#
+# WHY IT CANNOT BE A LOCAL ALERT: on 2026-08-08/09 a power cut took the laptop
+# down 11.6h then 9.6h and cost four commits. The missed-commit Discord alert
+# cannot cover that -- the outage that stops the wake cycle stops the alert too.
+# Nothing running on this machine can report that this machine is off.
+#
+# SETUP (the one step the code cannot do): create a check on any dead-man's
+# switch service that accepts an HTTP ping, set period ~10 min and grace ~20
+# (the wake cycle runs every 5), point its notification at the same Discord
+# channel the bet alerts use, and paste the ping URL below. BOTH stations need
+# it -- one check per station, or a healthy KLAX ping masks a dead KMIA.
+#
+# Empty = off, same convention as synoptic_token and discord_webhook_url.
