@@ -157,3 +157,38 @@ def test_inconsistent_y_is_rejected(tmp_path):
     with closing(db.connect(tmp_path / "h.db")) as c:
         with pytest.raises(ValueError, match="inconsistent y"):
             run(c, df, "high", ("KNYC",), NOW, today=date(2023, 1, 1), progress=lambda m: None)
+
+
+def _wf_run_row(c, metric="high"):
+    return c.execute("SELECT fingerprint, dataset_fingerprint, started_at, finished_at, rows FROM wf_runs "
+                     "WHERE metric=?", (metric,)).fetchone()
+
+
+def test_run_records_a_finished_run_tied_to_code_and_dataset(tmp_path, monkeypatch):
+    from citycast.fingerprint import code_fingerprint
+    monkeypatch.setitem(PARAMS, "n_estimators", 5)
+    df = _frame()
+    df.attrs["fingerprint"] = "dataset-fp"
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        n = run(c, df, "high", ("KLAX", "KNYC"), NOW, today=date(2023, 1, 1), progress=lambda m: None)
+        assert n > 0
+        assert tuple(_wf_run_row(c)) == (code_fingerprint(), "dataset-fp", NOW(), NOW(), n)
+        assert c.execute("SELECT COUNT(*) FROM wf_predictions WHERE metric='high'").fetchone()[0] == n
+
+
+def test_crash_mid_run_leaves_the_run_unfinished(tmp_path, monkeypatch):
+    monkeypatch.setitem(PARAMS, "n_estimators", 5)
+    df, kw = _frame(), dict(today=date(2023, 1, 1))
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        run(c, df, "high", ("KLAX", "KNYC"), NOW, progress=lambda m: None, **kw)
+        assert _wf_run_row(c)[3] is not None                     # a finished run ...
+
+        def crash(msg):
+            if "predictions" in msg:                             # after the first fold is committed
+                raise RuntimeError("killed")
+        with pytest.raises(RuntimeError, match="killed"):
+            run(c, df, "high", ("KLAX", "KNYC"), NOW, progress=crash, **kw)
+        row = _wf_run_row(c)                                     # ... is reset by the next run's start
+        assert row[3] is None and row[4] is None
+        assert row[1] is None                                    # this frame carries no dataset fingerprint
+        assert c.execute("SELECT COUNT(*) FROM wf_predictions").fetchone()[0] > 0

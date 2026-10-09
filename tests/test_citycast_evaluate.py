@@ -2,6 +2,8 @@
 import json
 from contextlib import closing
 
+import pytest
+
 from citycast import db
 from citycast.evaluate import market_brier, select_and_gate
 
@@ -135,13 +137,64 @@ def test_select_and_gate_clears_stale_choices_for_this_metric_only(tmp_path):
         assert ("KSFO", "low") in rows
 
 
-def test_fingerprint_covers_scoring_modules():
-    from pathlib import Path
-
+def test_fingerprint_covers_all_modelling_files():
     import citycast.evaluate as ev
-    assert "metrics" in ev.FINGERPRINT_MODULES
-    for name in ev.FINGERPRINT_MODULES:
-        assert (Path(ev.__file__).parent / f"{name}.py").exists()
+    from citycast import fingerprint
+    assert ev.code_fingerprint is fingerprint.code_fingerprint
+    assert not hasattr(ev, "FINGERPRINT_MODULES")
+    files = fingerprint.FINGERPRINT_FILES
+    assert {"src/citycast/metrics.py", "src/highcast/buckets.py", "src/highcast/latentmax.py",
+            "src/highcast/timeutil.py", "src/citycast/stations.py", "config/citycast_stations.yaml"} <= set(files)
+    for rel in files:
+        assert (fingerprint.REPO_ROOT / rel).is_file(), rel
+
+
+def test_fingerprint_changes_when_a_highcast_helper_changes(tmp_path, monkeypatch):
+    import shutil
+
+    from citycast import fingerprint
+    for rel in fingerprint.FINGERPRINT_FILES:
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(fingerprint.REPO_ROOT / rel, tmp_path / rel)
+    before = fingerprint.code_fingerprint()
+    monkeypatch.setattr(fingerprint, "REPO_ROOT", tmp_path)
+    assert fingerprint.code_fingerprint() == before                  # same bytes, same hash
+    with open(tmp_path / "src/highcast/buckets.py", "a") as f:
+        f.write("\n# edited on main\n")
+    assert fingerprint.code_fingerprint() != before
+
+
+def _mark_runs(c, **over):
+    """A finished walk-forward record for both metrics that matches wf_predictions and the current code."""
+    from citycast.evaluate import code_fingerprint
+    fp = code_fingerprint()
+    with c:
+        for metric in ("high", "low"):
+            n = c.execute("SELECT COUNT(*) FROM wf_predictions WHERE metric=?", (metric,)).fetchone()[0]
+            db.upsert(c, "wf_runs", [{"metric": metric, "fingerprint": fp, "dataset_fingerprint": fp,
+                                      "started_at": F, "finished_at": F, "rows": n, **over}])
+
+
+@pytest.mark.parametrize("change, reason", [
+    ("DELETE FROM wf_runs WHERE metric='high'", "no walk-forward run"),
+    ("UPDATE wf_runs SET finished_at=NULL WHERE metric='high'", "never finished"),
+    ("UPDATE wf_runs SET rows=rows+1 WHERE metric='high'", "holds 360 rows but the walk-forward run wrote 361"),
+    ("DELETE FROM wf_predictions WHERE rowid IN (SELECT rowid FROM wf_predictions LIMIT 1)", "holds 359 rows"),
+    ("UPDATE wf_runs SET fingerprint='0000' WHERE metric='high'", "walk-forward ran under different code"),
+    ("UPDATE wf_runs SET dataset_fingerprint='0000' WHERE metric='high'", "dataset was built under different code"),
+    ("UPDATE wf_runs SET dataset_fingerprint=NULL WHERE metric='high'", "dataset was built under different code"),
+])
+def test_check_inputs_refuses_inconsistent_inputs(tmp_path, change, reason):
+    from citycast.evaluate import check_inputs
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c, good="city")
+        _mark_runs(c)
+        check_inputs(c, "high")                                  # consistent: passes
+        check_inputs(c, "low")                                   # an empty finished run is consistent too
+        with c:
+            c.execute(change)
+        with pytest.raises(RuntimeError, match=reason):
+            check_inputs(c, "high")
 
 
 def test_warning_survives_reverting_to_original_code(tmp_path):
