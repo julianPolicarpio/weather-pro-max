@@ -29,7 +29,7 @@ SIGMA_F = 3.0   # MOS spread prior in °F — a guess, not a measurement (spec �
 
 __all__ = ["MIN_EDGE", "SIGMA_F", "Decision", "evaluate_bucket", "normal_bucket_probs",
            "minutes_between", "ForecastBot", "FavoriteBot", "IemMos", "MosBot",
-           "HIGHCAST_STATIONS", "HighcastBot"]
+           "HIGHCAST_STATIONS", "HighcastBot", "CitycastBot"]
 
 
 class Decision(NamedTuple):
@@ -298,6 +298,59 @@ class HighcastBot(ForecastBot):
             return None, None
         return ({t: v / total for t, v in raw.items()},
                 {"source": "highcast", "kind": kind, "issued_at_utc": issued})
+
+    def pmf_for_event(self, markets, snapshot):
+        return self.forecast_for_event(markets, snapshot)[0]
+
+
+class CitycastBot(ForecastBot):
+    """citycast's 24-city model (spec 2026-10-07 §3.9). Reads data/history.db read-only and
+    uses only station/metrics whose model passed the gate and whose prediction was made by
+    the currently chosen variant; skips predictions older than 2 h."""
+    name = "citycast"
+    MAX_AGE_S = 7200
+
+    def __init__(self, history_db: str):
+        self.history_db = history_db
+
+    def _latest(self, station, metric, event_date, at_or_before):
+        path = Path(self.history_db)
+        if not path.exists():
+            return None
+        try:
+            with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)) as c:
+                return c.execute(
+                    """SELECT lp.pmf_json, lp.variant, lp.issued_utc FROM live_predictions lp
+                       JOIN model_choice mc ON mc.station=lp.station AND mc.metric=lp.metric
+                                           AND mc.variant=lp.variant
+                       WHERE mc.gate_pass=1 AND lp.station=? AND lp.metric=? AND lp.event_date=?
+                         AND lp.issued_utc<=? ORDER BY lp.issued_utc DESC LIMIT 1""",
+                    (station, metric, event_date, at_or_before)).fetchone()
+        except sqlite3.Error as e:
+            log.warning("citycast read failed for %s %s %s: %r", station, metric, event_date, e)
+            return None
+
+    def forecast_for_event(self, markets, snapshot):
+        first = markets[0]
+        if first.station is None or first.metric is None:
+            return None, None
+        row = self._latest(first.station, first.metric, first.event_date, snapshot.taken_at)
+        if row is None:
+            return None, None
+        age = (datetime.fromisoformat(snapshot.taken_at) - datetime.fromisoformat(row[2])).total_seconds()
+        if age > self.MAX_AGE_S:
+            return None, None
+        try:
+            pmf = {int(k): float(v) for k, v in json.loads(row[0]).items()}
+        except (ValueError, TypeError, AttributeError) as e:
+            log.warning("citycast pmf unreadable for %s: %r", first.event_ticker, e)
+            return None, None
+        raw = {m.ticker: pmf_mass(pmf, m.lo, m.hi) or 0.0 for m in markets}
+        total = sum(raw.values())
+        if total <= 0:
+            return None, None
+        return ({t: v / total for t, v in raw.items()},
+                {"source": "citycast", "variant": row[1], "issued_utc": row[2]})
 
     def pmf_for_event(self, markets, snapshot):
         return self.forecast_for_event(markets, snapshot)[0]

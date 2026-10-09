@@ -454,13 +454,13 @@ def test_confirmation_after_settle_before_decide_once_per_hour_even_when_forced(
     with closing(connect(':memory:')) as conn:
         ensure_accounts(conn)
         run_cycle(conn, fake_get, [], at(NOW))
-        assert calls == ['settle', 'favorite', 'highcast', 'manual', 'mos', 'decide']
+        assert calls == ['settle', 'citycast', 'favorite', 'highcast', 'manual', 'mos', 'decide']
         calls.clear()
         run_cycle(conn, fake_get, [], at(SAME_HOUR), force_decide=True)
         assert calls == ['settle', 'decide']
         calls.clear()
         run_cycle(conn, fake_get, [], at(NEXT_HOUR))
-        assert calls == ['settle', 'favorite', 'highcast', 'manual', 'mos', 'decide']
+        assert calls == ['settle', 'citycast', 'favorite', 'highcast', 'manual', 'mos', 'decide']
 
 
 # ---- M2: a confirmation error never stops trading ------------------------------------
@@ -478,7 +478,7 @@ def test_a_confirmation_error_never_stops_trading(monkeypatch, caplog):
         ensure_accounts(conn)
         spy = SpyBot()
         out = run_cycle(conn, fake_get, [spy], at(NOW))
-        assert seen == ['favorite', 'highcast', 'manual', 'mos']      # the rest still advance
+        assert seen == ['citycast', 'favorite', 'highcast', 'manual', 'mos']      # the rest still advance
         assert out['confirmation_errors'] == ['highcast']
         assert out['status'] == 'ok' and out['decided'] is True
         assert out['orders'] == 1 and spy.seen == [NOW]               # decide_all still ran
