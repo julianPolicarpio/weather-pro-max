@@ -116,6 +116,21 @@ def _choose(df: pd.DataFrame, metric: str) -> list[dict]:
     return out
 
 
+def pre_day_diffs(df: pd.DataFrame, choices: list[dict]) -> dict[str, dict[str, tuple[float, int] | None]]:
+    """Chosen minus mosnorm RPS over the paired rows whose model row has no running extremum yet
+    (run_ext NULL: before the day's first observation, MOS's fair domain), per period:
+    {station: {"selection": (mean, distinct days) | None, "report": ...}}. Reported beside the gate."""
+    out = {}
+    for row in choices:
+        p = _paired(df[df["station"] == row["station"]], row["variant"], "mosnorm")
+        p = p[p["run_ext"].isna()]
+        out[row["station"]] = {
+            period: (float((part["a"] - part["b"]).mean()), int(part["event_date"].nunique())) if len(part) else None
+            for period, part in (("selection", p[p["event_date"] < SELECTION_END]),
+                                 ("report", p[p["event_date"] >= SELECTION_END]))}
+    return out
+
+
 def choose_and_gate(conn, metric: str) -> list[dict]:
     """The model_choice rows of one metric, computed but not written (evaluate_all stamps decided_at and
     writes them). The variant is chosen on the selection period only; the report period only confirms."""
@@ -188,32 +203,41 @@ def _freeze_warning(conn) -> list[str]:
 
 def write_report(results: dict[str, dict], warning: list[str]) -> str:
     """Render already-computed results (pure: reads no DB, writes no file).
-    results[metric] = {"choices": [model_choice rows], "market": market_brier(...)}."""
+    results[metric] = {"choices": [model_choice rows], "pre_day": pre_day_diffs(...), "market": market_brier(...)}."""
     lines = ["# citycast evaluation", "", *warning,
              f"Selection period: event dates before {SELECTION_END}. Report period: on/after. "
              "RPS = discrete CRPS (lower is better). Gate = selection CI hi < 0 AND report-period mean "
              f"below mosnorm over >= {REPORT_MIN_DAYS} days. "
              "Market Brier diff < 0 means the model beat the market mid. "
              "Selection-period columns are in-sample for the variant choice; the report-period columns "
-             "are the out-of-sample check.", ""]
+             "are the out-of-sample check. On same-day rows mosnorm is truncated at the running extremum, as "
+             "the model is. Pre-day Δ = chosen minus mosnorm RPS over rows before the day's first observation "
+             "(no running extremum yet), MOS's fair domain. Gate and pre-day columns use paired rows only (rows "
+             "where both the model and mosnorm predicted).", ""]
 
     def fmt(x):
         return f"{x[0]:+.4f} [{x[1]:+.4f}, {x[2]:+.4f}] ({x[3]})" if x else "no prices"
 
     def num(x):
         return "—" if x is None else f"{x:.3f}"
+
+    def pre(x):
+        return "—" if x is None else f"{x[0]:+.4f} ({x[1]})"
     for metric in METRICS:
         res = results[metric]
         sel_m, rep_m = res["market"]["selection"], res["market"]["report"]
         lines += [f"## {metric}", "",
                   "| station | variant | RPS (sel) | mosnorm RPS (sel) | gate CI hi | RPS (rep) | "
-                  "mosnorm RPS (rep) | rep days | gate | market Δ sel [CI] (n) | market Δ report [CI] (n) |",
-                  "|---|---|---|---|---|---|---|---|---|---|---|"]
+                  "mosnorm RPS (rep) | rep days | gate | pre-day Δ sel (days) | pre-day Δ rep (days) | "
+                  "market Δ sel [CI] (n) | market Δ report [CI] (n) |",
+                  "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
         for row in res["choices"]:
             verdict = "PASS" if row["gate_pass"] else ("fail (report)" if row["sel_pass"] else "fail")
+            split = res["pre_day"][row["station"]]
             lines.append(f"| {row['station']} | {row['variant']} | {row['crps_sel']:.3f} | "
                          f"{row['mos_crps_sel']:.3f} | {row['gate_ci_hi']:+.3f} | {num(row['crps_rep'])} | "
                          f"{num(row['mos_crps_rep'])} | {row['rep_days']} | {verdict} | "
+                         f"{pre(split['selection'])} | {pre(split['report'])} | "
                          f"{fmt(sel_m.get(row['station']))} | {fmt(rep_m.get(row['station']))} |")
         lines.append("")
     return "\n".join(lines) + "\n"
@@ -227,9 +251,12 @@ def evaluate_all(conn, report_path: Path, now_iso) -> Path:
         check_inputs(conn, metric)
     results: dict[str, dict] = {}
     for metric in METRICS:
-        choices = _choose(scored(conn, metric), metric)
+        df = scored(conn, metric)
+        choices = _choose(df, metric)
+        pre_day = pre_day_diffs(df, choices)
+        del df                             # market_brier loads pmfs; the score frame is no longer needed
         choice = {r["station"]: r["variant"] for r in choices}
-        results[metric] = {"choices": choices, "market": market_brier(conn, metric, choice)}
+        results[metric] = {"choices": choices, "pre_day": pre_day, "market": market_brier(conn, metric, choice)}
     text = write_report(results, _freeze_warning(conn))
     run_at, fp = now_iso(), code_fingerprint()
     with conn:

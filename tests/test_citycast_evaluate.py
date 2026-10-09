@@ -5,14 +5,14 @@ from contextlib import closing
 import pytest
 
 from citycast import db
-from citycast.evaluate import choose_and_gate, evaluate_all, market_brier, scored
+from citycast.evaluate import choose_and_gate, evaluate_all, market_brier, pre_day_diffs, scored
 
 F = "2026-10-07T00:00:00+00:00"
 
 
-def _pred(variant, d, pmf, asof="12:00"):
+def _pred(variant, d, pmf, asof="12:00", run_ext=None):
     return {"station": "KNYC", "metric": "high", "event_date": d, "asof_utc": f"{d}T{asof}:00+00:00",
-            "variant": variant, "fold": "x", "anchor": 50.0, "run_ext": None, "quantiles_json": "{}",
+            "variant": variant, "fold": "x", "anchor": 50.0, "run_ext": run_ext, "quantiles_json": "{}",
             "pmf_json": json.dumps(pmf), "k": 1.0, "created_at": F}
 
 
@@ -290,3 +290,42 @@ def test_report_labels_selection_columns_in_sample(tmp_path):
         text = evaluate_all(c, tmp_path / "r.md", lambda: F).read_text()
         assert "in-sample for the variant choice" in text and "| KNYC | city |" in text
 
+
+def _seed_pre_and_same_day(c):
+    """city loses to mosnorm before the day's first observation (06:00, run_ext NULL) and wins by more
+    once it has the running max (18:00, run_ext 50). shared is worse than both, so city is chosen."""
+    preds, cli = [], []
+    days = [f"2025-0{1 + i // 28}-{1 + i % 28:02d}" for i in range(60)]
+    days += [f"2026-0{4 + i // 28}-{1 + i % 28:02d}" for i in range(60)]
+    for d in days:
+        cli.append({"station": "KNYC", "date": d, "high_f": 50, "low_f": 30, "final": 1,
+                    "issued_utc": None, "raw": "{}", "fetched_at": F})
+        preds += [_pred("city", d, {47: 0.5, 53: 0.5}, "06:00"), _pred("mosnorm", d, {50: 0.9, 51: 0.1}, "06:00"),
+                  _pred("shared", d, {45: 1.0}, "06:00"),
+                  _pred("city", d, {50: 1.0}, "18:00", 50.0), _pred("mosnorm", d, {40: 1.0}, "18:00", 50.0),
+                  _pred("shared", d, {45: 1.0}, "18:00", 50.0)]
+    with c:
+        db.upsert(c, "cli_daily", cli)
+        db.upsert(c, "wf_predictions", preds)
+
+
+def test_pre_day_split_isolates_rows_before_the_first_observation(tmp_path):
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed_pre_and_same_day(c)
+        choices = choose_and_gate(c, "high")
+        assert choices[0]["variant"] == "city" and choices[0]["gate_pass"] == 1   # carried by same-day rows
+        split = pre_day_diffs(scored(c, "high"), choices)["KNYC"]
+        # pre-day: city RPS 1.5 (mass 0.5 at 47 and 53, y = 50) minus mosnorm 0.01
+        assert split == {"selection": (pytest.approx(1.49), 60), "report": (pytest.approx(1.49), 60)}
+        _mark_runs(c)
+        text = evaluate_all(c, tmp_path / "r.md", lambda: F).read_text()
+        assert "pre-day Δ sel (days)" in text and "| PASS | +1.4900 (60) | +1.4900 (60) |" in text
+
+
+def test_pre_day_split_is_empty_without_pre_day_rows(tmp_path):
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        _seed(c, good="city")
+        with c:
+            c.execute("UPDATE wf_predictions SET run_ext=50.0")          # every row has seen an observation
+        df = scored(c, "high")
+        assert pre_day_diffs(df, choose_and_gate(c, "high")) == {"KNYC": {"selection": None, "report": None}}
