@@ -20,14 +20,40 @@ def test_build_one_day_has_grid_rows_and_truth(tmp_path, monkeypatch):
         assert len(df) == 12 and set(FEATURE_COLS) <= set(df.columns)
         assert (df["y"] == 47.0).all() and df["asof_utc"].is_monotonic_increasing
         monkeypatch.setattr(dataset, "DATASET_DIR", tmp_path / "ds")
-        dataset.save(df, "high")
+        dataset.save(df, "high", "fp-1")
         assert dataset.load("high").equals(df)
 
 
-def test_save_stamps_the_code_fingerprint_and_load_keeps_it(tmp_path, monkeypatch):
+def test_save_stamps_the_given_fingerprint_and_load_keeps_it(tmp_path, monkeypatch):
     import pandas as pd
 
-    from citycast.fingerprint import code_fingerprint
     monkeypatch.setattr(dataset, "DATASET_DIR", tmp_path / "ds")
-    dataset.save(pd.DataFrame({"station": ["KNYC"], "y": [47.0]}), "high")
-    assert dataset.load("high").attrs["fingerprint"] == code_fingerprint()
+    dataset.save(pd.DataFrame({"station": ["KNYC"], "y": [47.0]}), "high", "fp-from-the-caller")
+    assert dataset.load("high").attrs["fingerprint"] == "fp-from-the-caller"
+    assert not hasattr(dataset, "code_fingerprint")                  # save never hashes the code itself
+
+
+def test_dataset_command_stamps_the_hash_taken_at_command_start(tmp_path, monkeypatch, capsys):
+    import json
+
+    import pandas as pd
+
+    from citycast import cli, fingerprint
+    calls = []
+
+    def hashes():                                                    # the code "changes" after the first hash
+        calls.append(1)
+        return f"hash-{len(calls)}"
+    monkeypatch.setattr(fingerprint, "code_fingerprint", hashes)
+    monkeypatch.setattr(cli, "code_fingerprint", hashes)
+    monkeypatch.setattr(dataset, "DATASET_DIR", tmp_path / "ds")
+    monkeypatch.setattr(cli, "FeatureContext", lambda *a, **k: object())
+
+    def build(ctx, metric, since, until, icaos=None, progress=print):
+        assert len(calls) == 1                                       # hashed before the (long) build started
+        return pd.DataFrame({"station": ["KNYC"], "y": [47.0]})
+    monkeypatch.setattr(cli.dataset, "build", build)
+    assert cli.main(["--db", str(tmp_path / "h.db"), "dataset", "--metric", "high"]) == 0
+    assert json.loads(capsys.readouterr().out.splitlines()[-1])["rows"] == 1
+    assert dataset.load("high").attrs["fingerprint"] == "hash-1"
+    assert len(calls) == 1

@@ -8,6 +8,7 @@ FINGERPRINT_FILES = ("src/citycast/asof.py", "src/citycast/features.py", "src/ci
                      "src/citycast/qmodel.py", "src/citycast/metrics.py", "src/citycast/walkforward.py",
                      "src/citycast/evaluate.py", "src/citycast/fingerprint.py", "src/citycast/stations.py",
                      "src/highcast/latentmax.py", "src/highcast/buckets.py", "src/highcast/timeutil.py",
+                     "src/highcast/quantize.py", "src/highcast/config.py", "src/highcast/metric.py",
                      "config/citycast_stations.yaml")
 
 
