@@ -192,3 +192,25 @@ def test_crash_mid_run_leaves_the_run_unfinished(tmp_path, monkeypatch):
         assert row[3] is None and row[4] is None
         assert row[1] is None                                    # this frame carries no dataset fingerprint
         assert c.execute("SELECT COUNT(*) FROM wf_predictions").fetchone()[0] > 0
+
+
+@pytest.mark.parametrize("metric, bound, dead", [("high", 61.4, lambda t: t < 61),    # rounds to 61
+                                                 ("low", 58.6, lambda t: t > 59)])    # rounds to 59
+def test_mosnorm_is_truncated_at_the_running_extremum_on_same_day_rows(tmp_path, monkeypatch, metric, bound, dead):
+    from citycast.metrics import normal_pmf
+    monkeypatch.setitem(PARAMS, "n_estimators", 5)
+    df = _frame().assign(metric=metric)
+    same_day = df["asof_utc"].str.endswith("T18:00:00+00:00")
+    df.loc[same_day, "run_ext"] = bound
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        run(c, df, metric, ("KLAX", "KNYC"), NOW, today=date(2023, 1, 1), progress=lambda m: None)
+        rows = c.execute("SELECT asof_utc, run_ext, pmf_json FROM wf_predictions WHERE variant='mosnorm'").fetchall()
+    assert {a[-14:-6] for a, _, _ in rows} == {"06:00:00", "12:00:00", "18:00:00"}
+    assert any(dead(t) for t in normal_pmf(60.0))                # the bound really cuts the baseline
+    for asof, run_ext, pj in rows:
+        pmf = {int(t): p for t, p in json.loads(pj).items()}
+        if asof.endswith("T18:00:00+00:00"):                    # same-day: no mass the bound has ruled out
+            assert run_ext == bound and not any(dead(t) for t in pmf)
+            assert abs(sum(pmf.values()) - 1) < 1e-9
+        else:                                                   # pre-day: the plain MOS normal
+            assert run_ext is None and pmf == normal_pmf(60.0)

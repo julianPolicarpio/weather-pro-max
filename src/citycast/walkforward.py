@@ -9,6 +9,7 @@ from citycast import db
 from citycast.fingerprint import code_fingerprint
 from citycast.metrics import normal_pmf, rps
 from citycast.qmodel import QUANTILES, QuantileModel, pmf_from_quantiles
+from highcast.buckets import truncate_at_bound
 
 K_GRID = tuple(round(0.6 + 0.1 * i, 1) for i in range(11))
 MIN_TRAIN_ROWS = 1000
@@ -108,10 +109,13 @@ def run(conn, df: pd.DataFrame, metric: str, stations: tuple[str, ...], now_iso,
             k_city = {s: choose_k(_prev(conn, s, metric, "city", cutoff, truth), metric)}
             rows += _rows(te, city.predict_y_quantiles(te), metric, "city", label, k_city, now)
         for r in test[test["f_MEX"].notna()].itertuples(index=False):
+            pmf = normal_pmf(r.f_MEX)
+            if not math.isnan(r.run_ext):   # same-day: the baseline gets the bound the model gets (I2)
+                pmf = truncate_at_bound(pmf, r.run_ext, "max" if metric == "high" else "min")
             rows.append({"station": r.station, "metric": metric, "event_date": r.event_date,
                          "asof_utc": r.asof_utc, "variant": "mosnorm", "fold": label, "anchor": r.anchor,
-                         "run_ext": None, "quantiles_json": "{}",
-                         "pmf_json": json.dumps(normal_pmf(r.f_MEX)), "k": 1.0, "created_at": now})
+                         "run_ext": None if math.isnan(r.run_ext) else r.run_ext, "quantiles_json": "{}",
+                         "pmf_json": json.dumps(pmf), "k": 1.0, "created_at": now})
         with conn:
             written += db.upsert(conn, "wf_predictions", rows)
         progress(f"{metric} {label}: {len(rows)} predictions")
