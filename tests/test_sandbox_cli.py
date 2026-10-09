@@ -9,12 +9,12 @@ from sandbox.cycle import utc_now_iso
 from sandbox.db import connect
 
 
-def test_init_creates_all_four_accounts(tmp_path, capsys):
+def test_init_creates_all_five_accounts(tmp_path, capsys):
     db = tmp_path / "s.db"
     assert main(["--db", str(db), "init"]) == 0
     with closing(connect(db)) as conn:
         names = [r["name"] for r in conn.execute("SELECT name FROM accounts ORDER BY name")]
-    assert names == ["favorite", "highcast", "manual", "mos"]
+    assert names == ["citycast", "favorite", "highcast", "manual", "mos"]
 
 
 def test_report_prints_account_and_two_segment_lines(tmp_path, capsys):
@@ -23,7 +23,7 @@ def test_report_prints_account_and_two_segment_lines(tmp_path, capsys):
     capsys.readouterr()
     assert main(["--db", str(db), "report"]) == 0
     lines = capsys.readouterr().out.strip().splitlines()
-    assert len(lines) == 12 and all("LOCKED" in ln for ln in lines[::3])
+    assert len(lines) == 15 and all("LOCKED" in ln for ln in lines[::3])
     assert all("pre_day" in ln for ln in lines[1::3])
     assert all("same_day" in ln for ln in lines[2::3])
 
@@ -101,7 +101,7 @@ def test_cycle_passes_the_clock_function_and_the_bot_order(tmp_path, capsys, mon
     monkeypatch.setattr(cli, "run_cycle", fake)
     main(["--db", str(db), "cycle"])
     assert seen["clock"] is utc_now_iso
-    assert seen["bots"] == ["favorite", "highcast", "mos"]
+    assert seen["bots"] == ["favorite", "highcast", "citycast", "mos"]
 
 
 def test_cycle_exits_one_on_a_stale_run(tmp_path, capsys, monkeypatch):

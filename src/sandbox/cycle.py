@@ -29,6 +29,7 @@ ACCOUNTS: tuple[tuple[str, str, str], ...] = (
     ("favorite", "bot", "control: follow the crowd after fees"),
     ("mos", "bot", "uncalibrated: MOS with a fixed 3.0°F spread"),
     ("highcast", "bot", "KLAX/KMIA only"),
+    ("citycast", "bot", "24 cities: citycast model, gated pairs only"),
     ("manual", "manual", "Julian's hand bets"),
 )
 _FILLED = ("filled", "partial")
