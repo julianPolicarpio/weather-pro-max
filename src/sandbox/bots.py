@@ -79,7 +79,9 @@ class ForecastBot:
     pre_day_only = False
 
     def pmf_for_event(self, markets: list[Market], snapshot: Snapshot) -> dict[str, float] | None:
-        raise NotImplementedError
+        """The pmf half of `forecast_for_event`. A subclass overrides this or
+        `forecast_for_event`; each defaults to the other, so overriding neither recurses."""
+        return self.forecast_for_event(markets, snapshot)[0]
 
     def forecast_for_event(self, markets: list[Market],
                            snapshot: Snapshot) -> tuple[dict[str, float] | None, dict | None]:
@@ -229,8 +231,23 @@ class MosBot(ForecastBot):
         return (normal_bucket_probs(markets, mu, self.sigma),
                 {"source": source, "mu": mu, "sigma": self.sigma})
 
-    def pmf_for_event(self, markets, snapshot):
-        return self.forecast_for_event(markets, snapshot)[0]
+
+def _open_ro(path: Path) -> sqlite3.Connection:
+    """Read-only handle (URI `mode=ro`) on a database another process writes.
+
+    timeout=30 rides out a write lock rather than losing an hourly decision after
+    sqlite's 5 s default."""
+    return sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
+
+
+def _normalise_over_markets(pmf: dict[int, float], markets: list[Market]) -> dict[str, float] | None:
+    """The pmf's mass in each market's bucket, rescaled to sum to 1 over the ladder.
+    None when the ladder holds no mass."""
+    raw = {m.ticker: pmf_mass(pmf, m.lo, m.hi) or 0.0 for m in markets}
+    total = sum(raw.values())
+    if total <= 0:
+        return None
+    return {t: v / total for t, v in raw.items()}
 
 
 HIGHCAST_STATIONS = {"KLAX", "KMIA"}
@@ -254,11 +271,10 @@ class HighcastBot(ForecastBot):
         path = Path(self.highcast_db)
         if not path.exists():
             return None
-        uri = path.resolve().as_uri() + "?mode=ro"
         try:
-            # timeout=30: the live desk writes this DB (journal_mode=delete), so ride out a
-            # write lock rather than losing an hourly decision after sqlite's 5 s default.
-            with closing(sqlite3.connect(uri, uri=True, timeout=30)) as c:
+            # The live desk writes this DB (journal_mode=delete); _open_ro's 30 s timeout
+            # rides out its write lock.
+            with closing(_open_ro(path)) as c:
                 row = c.execute(
                     f"""SELECT buckets, kind, issued_at_utc FROM predictions
                        WHERE station=? AND metric=? AND target_date=? AND issued_at_utc<=?
@@ -292,15 +308,10 @@ class HighcastBot(ForecastBot):
         if not found or not found[0]:
             return None, None
         pmf, kind, issued = found
-        raw = {m.ticker: pmf_mass(pmf, m.lo, m.hi) or 0.0 for m in markets}
-        total = sum(raw.values())
-        if total <= 0:
+        probs = _normalise_over_markets(pmf, markets)
+        if probs is None:
             return None, None
-        return ({t: v / total for t, v in raw.items()},
-                {"source": "highcast", "kind": kind, "issued_at_utc": issued})
-
-    def pmf_for_event(self, markets, snapshot):
-        return self.forecast_for_event(markets, snapshot)[0]
+        return probs, {"source": "highcast", "kind": kind, "issued_at_utc": issued}
 
 
 class CitycastBot(ForecastBot):
@@ -318,7 +329,7 @@ class CitycastBot(ForecastBot):
         if not path.exists():
             return None
         try:
-            with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)) as c:
+            with closing(_open_ro(path)) as c:
                 return c.execute(
                     """SELECT lp.pmf_json, lp.variant, lp.issued_utc FROM live_predictions lp
                        JOIN model_choice mc ON mc.station=lp.station AND mc.metric=lp.metric
@@ -327,7 +338,10 @@ class CitycastBot(ForecastBot):
                          AND lp.issued_utc<=? ORDER BY lp.issued_utc DESC LIMIT 1""",
                     (station, metric, event_date, at_or_before)).fetchone()
         except sqlite3.Error as e:
-            log.warning("citycast read failed for %s %s %s: %r", station, metric, event_date, e)
+            # history.db gains these tables only at the first `citycast` run: until then it is
+            # expected, not worth a warning per event per hour.
+            if not (isinstance(e, sqlite3.OperationalError) and "no such table" in str(e)):
+                log.warning("citycast read failed for %s %s %s: %r", station, metric, event_date, e)
             return None
 
     def forecast_for_event(self, markets, snapshot):
@@ -345,12 +359,7 @@ class CitycastBot(ForecastBot):
         except (ValueError, TypeError, AttributeError) as e:
             log.warning("citycast pmf unreadable for %s: %r", first.event_ticker, e)
             return None, None
-        raw = {m.ticker: pmf_mass(pmf, m.lo, m.hi) or 0.0 for m in markets}
-        total = sum(raw.values())
-        if total <= 0:
+        probs = _normalise_over_markets(pmf, markets)
+        if probs is None:
             return None, None
-        return ({t: v / total for t, v in raw.items()},
-                {"source": "citycast", "variant": row[1], "issued_utc": row[2]})
-
-    def pmf_for_event(self, markets, snapshot):
-        return self.forecast_for_event(markets, snapshot)[0]
+        return probs, {"source": "citycast", "variant": row[1], "issued_utc": row[2]}
