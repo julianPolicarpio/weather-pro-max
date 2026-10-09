@@ -213,7 +213,7 @@ difference.
      looked good in-sample. Report-period numbers never choose the variant or k.
 - **Design freeze and fingerprint.** Every `citycast evaluate` run logs a sha256 fingerprint of
   the modelling code (`citycast.fingerprint.FINGERPRINT_FILES`: the citycast modelling modules, the
-  highcast helpers they call — latentmax, buckets, timeutil — and the station registry) in
+  highcast helpers they call — latentmax, buckets, timeutil, quantize, config, metric — and the station registry) in
   `eval_log`. The dataset pickle and the `wf_runs` row carry the fingerprint they were built under;
   `citycast evaluate` refuses to run unless both match the current code and the walk-forward run
   finished with every row stored. Evaluation computes everything first and commits model_choice,
