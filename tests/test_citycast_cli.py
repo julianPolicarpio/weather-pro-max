@@ -89,13 +89,71 @@ def _stub_refresh(monkeypatch, errors):
                                                             "errors": errors})
 
 
-def test_predict_blocked_by_refresh_errors(tmp_path, monkeypatch, capsys):
-    _stub_refresh(monkeypatch, [{"source": "obs", "key": "k", "error": "boom"}])
-    monkeypatch.setattr(cli.live, "predict", lambda *a, **k: pytest.fail("must not predict on stale data"))
+def _fake_refresh(monkeypatch, fail_counts, stations=("KSEA", "KDFW")):
+    """One chunk per station; each fails `fail_counts[icao]` times, then succeeds. Returns the call log."""
+    from citycast.backfill import Chunk
+    calls = []
+
+    def make(icao):
+        def run():
+            calls.append(icao)
+            if calls.count(icao) <= fail_counts.get(icao, 0):
+                raise TimeoutError("iem timeout")
+            return []
+        return Chunk("cli", f"{icao}:recent", True, run)
+    chunks = [make(i) for i in stations]
+    monkeypatch.setattr(cli, "RETRY_PAUSE_S", 0)
+    real = cli.load_stations()
+    monkeypatch.setattr(cli, "load_stations", lambda: {i: real[i] for i in stations})
+    monkeypatch.setattr(cli, "Paced", lambda *a, **k: object())
+    monkeypatch.setattr(cli, "_chunks_for", lambda source, *a, **k: chunks)
+    monkeypatch.setattr(cli.mos, "recent_chunks", lambda *a, **k: [])
+    monkeypatch.setattr(cli.obs, "recent_chunks", lambda *a, **k: [])
+    monkeypatch.setattr(cli, "run_chunks", _fake_run_chunks)
+    return calls
+
+
+def _fake_run_chunks(conn, chunks, **kw):
+    out = {"done": 0, "skipped": 0, "rows": 0, "errors": []}
+    for ch in chunks:
+        try:
+            ch.run()
+            out["done"] += 1
+        except Exception as e:  # noqa: BLE001
+            out["errors"].append({"source": ch.source, "key": ch.key, "error": str(e)})
+    return out
+
+
+def test_predict_retries_failed_chunk_once_and_does_not_skip(tmp_path, monkeypatch, capsys):
+    calls = _fake_refresh(monkeypatch, {"KSEA": 1})
+    seen = []
+    monkeypatch.setattr(cli.live, "predict", lambda conn, ctx, m, now, skip=frozenset(): seen.append(skip) or 1)
+    assert cli.main(["--db", str(tmp_path / "h.db"), "predict"]) == 0
+    out = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert calls == ["KSEA", "KDFW", "KSEA"]     # only the failed chunk is re-run
+    assert out["skipped_stations"] == [] and out["refresh_errors"] == [] and out["high"] == out["low"] == 1
+    assert seen == [frozenset(), frozenset()]
+
+
+def test_predict_station_failing_twice_is_skipped_exit_3(tmp_path, monkeypatch, capsys):
+    calls = _fake_refresh(monkeypatch, {"KSEA": 2})
+    seen = []
+    monkeypatch.setattr(cli.live, "predict", lambda conn, ctx, m, now, skip=frozenset(): seen.append(skip) or 1)
+    assert cli.main(["--db", str(tmp_path / "h.db"), "predict"]) == 3
+    out = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert calls.count("KSEA") == 2 and calls.count("KDFW") == 1
+    assert out["skipped_stations"] == ["KSEA"]
+    assert [e["key"] for e in out["refresh_errors"]] == ["KSEA:recent"]
+    assert seen == [frozenset({"KSEA"})] * 2
+
+
+def test_predict_all_stations_failing_exit_1_writes_nothing(tmp_path, monkeypatch, capsys):
+    _fake_refresh(monkeypatch, {"KSEA": 9, "KDFW": 9})
+    monkeypatch.setattr(cli.live, "predict", lambda *a, **k: pytest.fail("nothing may be predicted"))
     dbp = tmp_path / "h.db"
     assert cli.main(["--db", str(dbp), "predict"]) == 1
     out = json.loads(capsys.readouterr().out.splitlines()[-1])
-    assert out["refresh_errors"] and out["refresh_errors"][0]["error"] == "boom"
+    assert out["skipped_stations"] == ["KDFW", "KSEA"] and len(out["refresh_errors"]) == 2
     with closing(db.connect(dbp)) as c:
         assert c.execute("SELECT COUNT(*) FROM live_predictions").fetchone()[0] == 0
 
