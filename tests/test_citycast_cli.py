@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from citycast import cli, db
+from test_citycast_evaluate import _mark_runs
 from test_citycast_evaluate import _seed as _seed_eval
 
 
@@ -109,6 +110,7 @@ def test_evaluate_writes_report_to_patched_dir(tmp_path, monkeypatch, capsys):
     dbp = tmp_path / "h.db"
     with closing(db.connect(dbp)) as c:
         _seed_eval(c, good="city")
+        _mark_runs(c)
     monkeypatch.setattr(cli, "REPORT_DIR", tmp_path / "reports")
     assert cli.main(["--db", str(dbp), "evaluate"]) == 0
     path = Path(json.loads(capsys.readouterr().out.splitlines()[-1])["report"])
