@@ -1,5 +1,5 @@
 {
- "state": "{\"city\":\"KLAX\",\"metric\":\"high\",\"bucket\":\"66-67\",\"hours_to_close\":14.5,\"lead\":\"pre_day\",\"model_p\":0.41,\"model_median\":66.8,\"model_iqr\":3.1,\"ask\":0.33,\"bid\":0.3,\"market_p\":0.315,\"edge_after_fee\":0.06,\"running_gap\":null,\"month\":1}",
+ "state": "{\"city\":\"KLAX\",\"metric\":\"high\",\"bucket\":\"66-67\",\"hours_to_close\":14.5,\"lead\":\"pre_day\",\"model_p\":0.41,\"model_median\":66.8,\"model_iqr\":3.1,\"ask\":0.33,\"bid\":0.3,\"market_p\":0.315,\"edge_after_fee\":0.06,\"gap_to_lo\":null,\"gap_to_hi\":null,\"month\":1}",
  "questions": {
   "win": {
    "type": "noul",
