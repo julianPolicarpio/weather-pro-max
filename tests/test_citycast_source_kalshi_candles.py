@@ -74,3 +74,18 @@ def test_chunks_since_filters_by_close_time(tmp_path):
         now = lambda: "2026-10-07T00:00:00+00:00"  # noqa: E731
         assert [ch.key for ch in chunks(FakePaced(), c, now, since="2026-09-01")] == ["NEW"]
         assert [ch.key for ch in chunks(FakePaced(), c, now)] == ["OLD", "NEW"]
+
+
+def test_live_series_endpoint_shape_is_parsed():
+    """The /series/.../candlesticks endpoint (used after the historical cutoff, 2026-08-08) names prices
+    close_dollars and counts volume_fp / open_interest_fp; the historical endpoint uses close / volume.
+    Before this was handled, every post-cutoff candle was stored with NULL bid/ask."""
+    from citycast.sources.kalshi_candles import candle_rows
+    payload = {"candlesticks": [{
+        "end_period_ts": 1788976800, "open_interest_fp": "3979.35", "volume_fp": "1.00",
+        "price": {"close_dollars": "0.0100"},
+        "yes_ask": {"close_dollars": "0.0100", "high_dollars": "0.0100"},
+        "yes_bid": {"close_dollars": "0.0000", "high_dollars": "0.0000"}}]}
+    (row,) = candle_rows("KXHIGHMIA-26SEP09-T94", payload)
+    assert row["yes_ask"] == 0.01 and row["yes_bid"] == 0.0
+    assert row["volume"] == 1.0 and row["open_interest"] == 3979.35

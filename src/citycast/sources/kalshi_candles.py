@@ -13,14 +13,23 @@ def _num(x) -> float | None:
 
 
 def _close(d) -> float | None:
-    return _num(d.get("close")) if isinstance(d, dict) else None
+    # historical endpoint: "close"; live /series endpoint (after the cutoff): "close_dollars"
+    return _num(d.get("close", d.get("close_dollars"))) if isinstance(d, dict) else None
+
+
+def _first(c: dict, *keys) -> float | None:
+    for k in keys:
+        if c.get(k) not in (None, ""):
+            return _num(c[k])
+    return None
 
 
 def candle_rows(ticker: str, payload: dict) -> list[dict]:
     return [{"ticker": ticker,
              "end_utc": datetime.fromtimestamp(int(c["end_period_ts"]), timezone.utc).isoformat(),
              "yes_bid": _close(c.get("yes_bid")), "yes_ask": _close(c.get("yes_ask")),
-             "volume": _num(c.get("volume")), "open_interest": _num(c.get("open_interest"))}
+             "volume": _first(c, "volume", "volume_fp"),
+             "open_interest": _first(c, "open_interest", "open_interest_fp")}
             for c in payload.get("candlesticks") or []]
 
 
