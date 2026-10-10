@@ -7,7 +7,8 @@ from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from citycast import coverage, dataset, db, evaluate, live, walkforward
+from citycast import (coverage, dataset, db, decisions, evaluate, final_report, gate_eval, laya_io, live, meta,
+                      walkforward)
 from citycast.backfill import run_chunks
 from citycast.features import FeatureContext
 from citycast.fingerprint import code_fingerprint
@@ -26,6 +27,9 @@ RETRY_PAUSE_S = 30
 SOURCES = ("cli", "mos", "obs", "kalshi-markets", "kalshi-candles")
 
 REPORT_DIR = Path("docs/reports")
+B2_PATH = Path("data/citycast/models/gate-b2.pkl")
+NO_LAYA = ("run this from ~/projects/laya-weather-gate/.venv/bin/citycast "
+           "(laya is not installed in this environment)")
 
 
 def _chunks_for(source, paced, conn, stations, since, today, candle_since=None,
@@ -71,7 +75,25 @@ def main(argv: list[str] | None = None) -> int:
     tr.add_argument("--metric", choices=("high", "low"), required=True)
     pr = sub.add_parser("predict")
     pr.add_argument("--no-refresh", action="store_true")
+    dec = sub.add_parser("decisions")
+    dec.add_argument("action", choices=("build", "export"))
+    dec.add_argument("--out", default="data/citycast/laya")
+    gate = sub.add_parser("gate")
+    gate.add_argument("action", choices=("score", "final-report"))
+    gate.add_argument("--contender", choices=("B2", "L0", "L1"))
+    gate.add_argument("--model-ref")
+    gate.add_argument("--force", action="store_true")
     args = p.parse_args(argv)
+    if args.cmd == "gate" and args.action == "score":
+        if not args.contender:
+            p.error("gate score requires --contender")
+        if args.contender == "L1":
+            if not args.model_ref:
+                p.error("gate score --contender L1 requires --model-ref REPO@REV")
+            try:
+                final_report.pinned_ref(args.model_ref)
+            except ValueError as e:
+                p.error(str(e))
     # One hash per command, taken before anything fingerprinted is read or built: it is stamped on the
     # dataset, recorded by walkforward and logged by evaluate, so an edit mid-run cannot mismatch them.
     fp = code_fingerprint() if args.cmd in ("dataset", "walkforward", "evaluate") else None
@@ -164,4 +186,69 @@ def main(argv: list[str] | None = None) -> int:
             out.update({m: live.predict(conn, ctx, m, now, skip) for m in ("high", "low")})
             print(json.dumps(out))
             return 3 if skip else 0
+        if args.cmd == "decisions" and args.action == "build":
+            print(json.dumps({"rows": decisions.build(conn, stations)}))
+            return 0
+        if args.cmd == "decisions" and args.action == "export":
+            s = gate_eval.split(gate_eval.load(conn))   # train and validation only: the test split is never exported
+            out = Path(args.out)
+            n_tr = laya_io.export(laya_io.sample_train(s["train"]), out / "train.jsonl")
+            n_va = laya_io.export(s["validation"], out / "validation.jsonl")
+            print(json.dumps({"train": n_tr, "validation": n_va, "dir": str(out)}))
+            return 0
+        if args.cmd == "gate" and args.action == "score":
+            s = gate_eval.split(gate_eval.load(conn))
+            if args.contender == "B2":
+                m = meta.MetaLabeler(tuple(sorted(stations))).fit(s["train"])
+                meta.save(m, B2_PATH)
+                for k in ("train", "validation"):   # test is scored only by final-report
+                    with conn:
+                        conn.executemany("INSERT OR REPLACE INTO gate_scores VALUES (?,?,?,?)",
+                                         [("B2", t, a, float(x)) for t, a, x
+                                          in zip(s[k]["ticker"], s[k]["asof_utc"], m.predict(s[k]))])
+            else:
+                try:
+                    fn = laya_io.router_predict_fn(None if args.contender == "L0" else args.model_ref)
+                except ModuleNotFoundError as e:
+                    if e.name != "laya":    # torch, peft...: a different problem, shown as it is
+                        raise
+                    print(NO_LAYA, file=sys.stderr)
+                    return 2
+                key = "L0" if args.contender == "L0" else final_report.l1_key(args.model_ref)
+                laya_io.score(s["validation"], fn, key, conn)
+            print(json.dumps({"scored": args.contender}))
+            return 0
+        if args.cmd == "gate" and args.action == "final-report":
+            # Everything that can fail cheaply fails before the first (hours-long) test scoring run.
+            final_report.ensure_not_run(conn, args.force)
+            row = conn.execute("SELECT value FROM meta WHERE key='laya_l1_ref'").fetchone()
+            try:
+                ref = json.loads(row[0]) if row else None
+            except ValueError:
+                ref = None
+            if not ref or not isinstance(ref, str):
+                raise RuntimeError("laya_l1_ref not set: record the fine-tuned repo@revision first, as a JSON "
+                                   "string (plan 3 Task 8 Step 5)")
+            try:
+                key = final_report.l1_key(ref)
+            except ValueError as e:
+                raise RuntimeError(f"laya_l1_ref invalid: {e}") from e
+            b2 = meta.load_model(B2_PATH)
+            try:
+                fns = {"L0": laya_io.router_predict_fn(None), "L1": laya_io.router_predict_fn(ref)}
+            except ModuleNotFoundError as e:
+                if e.name != "laya":    # torch, peft...: a different problem, shown as it is
+                    raise
+                print(NO_LAYA, file=sys.stderr)
+                return 2
+            s = gate_eval.split(gate_eval.load(conn))
+            scores = {"B2": (None, b2.predict(s["validation"]), b2.predict(s["test"]))}
+            for name, fn in fns.items():
+                cached_as = key if name == "L1" else name     # L1 scores are cached per exact model revision
+                scores[name] = (None, laya_io.score(s["validation"], fn, cached_as, conn),
+                                laya_io.score(s["test"], fn, cached_as, conn))
+            out = final_report.run_final(conn, scores, REPORT_DIR / f"gate-final-{date.today()}.md",
+                                         force=args.force, now_iso=utcnow_iso, l1_ref=ref)
+            print(json.dumps({"winner": out["winner"], "margin": out["margin"], "model_ref": out["model_ref"]}))
+            return 0
     return 2
