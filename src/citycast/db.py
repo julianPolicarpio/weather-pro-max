@@ -45,6 +45,14 @@ CREATE TABLE IF NOT EXISTS eval_log (run_at TEXT, metric TEXT, fingerprint TEXT 
 CREATE TABLE IF NOT EXISTS live_predictions (station TEXT, metric TEXT, event_date TEXT,
   issued_utc TEXT, variant TEXT NOT NULL, anchor REAL, run_ext REAL, quantiles_json TEXT NOT NULL,
   pmf_json TEXT NOT NULL, k REAL NOT NULL, PRIMARY KEY (station, metric, event_date, issued_utc));
+CREATE TABLE IF NOT EXISTS decision_rows (ticker TEXT, asof_utc TEXT, event_ticker TEXT NOT NULL,
+  station TEXT NOT NULL, metric TEXT NOT NULL, event_date TEXT NOT NULL, lo INTEGER, hi INTEGER,
+  p_model REAL, model_median REAL, model_iqr REAL, ask REAL, bid REAL, mid REAL, spread REAL,
+  market_p REAL, fee REAL, edge REAL, hours_to_close REAL, lead_h REAL, run_gap_to_lo REAL,
+  run_gap_to_hi REAL, month INTEGER, won INTEGER NOT NULL, profit_if_bet REAL NOT NULL,
+  PRIMARY KEY (ticker, asof_utc));
+CREATE TABLE IF NOT EXISTS gate_scores (contender TEXT, ticker TEXT, asof_utc TEXT, p_win REAL NOT NULL,
+  PRIMARY KEY (contender, ticker, asof_utc));
 """
 
 
