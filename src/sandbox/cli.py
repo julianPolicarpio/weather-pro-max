@@ -7,7 +7,7 @@ import sqlite3
 import sys
 from contextlib import closing
 
-from sandbox.bots import CitycastBot, FavoriteBot, HighcastBot, IemMos, MosBot
+from sandbox.bots import CitycastBot, FavoriteBot, GateBot, HighcastBot, IemMos, MosBot
 from sandbox.cycle import ACCOUNTS, ensure_accounts, run_cycle, utc_now_iso
 from sandbox.db import NOT_INITIALISED, NotInitialised, connect, connect_readonly, require_initialised
 from sandbox.kalshi_public import PacedGet
@@ -105,7 +105,8 @@ def _cycle(args) -> int:
     with closing(connect(args.db)) as conn:
         ensure_accounts(conn)
         # favorite first (cheap), mos last: its MOS fetches are the slow part of an hour
-        bots = [FavoriteBot(), HighcastBot(args.highcast_db), CitycastBot(args.history_db), MosBot(IemMos())]
+        bots = [FavoriteBot(), HighcastBot(args.highcast_db), CitycastBot(args.history_db),
+                GateBot(args.history_db), MosBot(IemMos())]
         summary = run_cycle(conn, PacedGet(), bots, utc_now_iso,
                             force_decide=args.force_decide)
     print(json.dumps(summary))

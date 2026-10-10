@@ -7,16 +7,19 @@ import logging
 import math
 import sqlite3
 from contextlib import closing
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import NamedTuple
 from zoneinfo import ZoneInfo
+
+import pandas as pd
 
 from highcast.buckets import pmf_from_buckets, pmf_mass
 from highcast.fees import fee_per_contract
 from highcast.gating import kind_at_hour
 from highcast.fetchers.forecasts import IEM_MOS, parse_mos
 from highcast.http import get_json
+from highcast.timeutil import climate_day_bounds
 from highcast.orderbot import MIN_EDGE  # 0.03 — one constant shared with the live desk
 from sandbox.markets import usable_ask, usable_bid
 from sandbox.models import Candidate, Intent, Market, Snapshot
@@ -29,7 +32,7 @@ SIGMA_F = 3.0   # MOS spread prior in °F — a guess, not a measurement (spec �
 
 __all__ = ["MIN_EDGE", "SIGMA_F", "Decision", "evaluate_bucket", "normal_bucket_probs",
            "minutes_between", "ForecastBot", "FavoriteBot", "IemMos", "MosBot",
-           "HIGHCAST_STATIONS", "HighcastBot", "CitycastBot"]
+           "HIGHCAST_STATIONS", "HighcastBot", "CitycastBot", "GateBot"]
 
 
 class Decision(NamedTuple):
@@ -37,12 +40,13 @@ class Decision(NamedTuple):
     candidates: list[Candidate]
 
 
-def evaluate_bucket(p: float, ask: float | None) -> tuple[bool, float | None, float | None, str]:
+def evaluate_bucket(p: float, ask: float | None,
+                    min_edge: float = MIN_EDGE) -> tuple[bool, float | None, float | None, str]:
     if ask is None:
         return False, None, None, "no_ask"
     fpc = fee_per_contract(1, ask)
     edge = round(p - ask - fpc, 6)
-    if edge >= MIN_EDGE:
+    if edge >= min_edge:
         return True, fpc, edge, "edge"
     return False, fpc, edge, "below_min_edge"
 
@@ -77,6 +81,7 @@ class ForecastBot:
     skips every event whose station-local climate day has begun at that time."""
     name = "forecast"
     pre_day_only = False
+    min_edge = MIN_EDGE      # a bot with its own tuned margin overrides this (GateBot)
 
     def pmf_for_event(self, markets: list[Market], snapshot: Snapshot) -> dict[str, float] | None:
         """The pmf half of `forecast_for_event`. A subclass overrides this or
@@ -111,7 +116,7 @@ class ForecastBot:
                 if p is None:
                     continue
                 ask, bid = usable_ask(m), usable_bid(m)
-                ok, fpc, edge, reason = evaluate_bucket(p, ask)
+                ok, fpc, edge, reason = evaluate_bucket(p, ask, self.min_edge)
                 candidates.append(Candidate(
                     bot=self.name, ticker=m.ticker, series=m.series, station=m.station,
                     metric=m.metric, event_date=m.event_date, snapshot_id=snapshot.id,
@@ -333,7 +338,8 @@ class CitycastBot(ForecastBot):
         try:
             with closing(_open_ro(path)) as c:
                 return c.execute(
-                    """SELECT lp.pmf_json, lp.variant, lp.issued_utc FROM live_predictions lp
+                    """SELECT lp.pmf_json, lp.variant, lp.issued_utc, lp.quantiles_json, lp.run_ext
+                       FROM live_predictions lp
                        JOIN model_choice mc ON mc.station=lp.station AND mc.metric=lp.metric
                                            AND mc.variant=lp.variant
                        WHERE mc.gate_pass=1 AND lp.station=? AND lp.metric=? AND lp.event_date=?
@@ -365,3 +371,114 @@ class CitycastBot(ForecastBot):
         if probs is None:
             return None, None
         return probs, {"source": "citycast", "variant": row[1], "issued_utc": row[2]}
+
+
+class GateBot(CitycastBot):
+    """Bet/skip gate (spec 2026-10-07 section 4.7): the held-out test's winner turns citycast's
+    forecast into P(win) per bucket; bets when P - ask - fee >= the tuned margin.
+
+    Paper only. Reads `meta.gate_choice` from history.db read-only. No choice yet, or winner
+    B0 ("do not bet"), means no forecasts. Anything it cannot run (L1 needs the Laya sidecar,
+    a missing B2 pickle, a malformed choice) fails closed with one warning, never an exception."""
+    name = "gate"
+    WINNERS = ("B1", "B2")
+
+    def __init__(self, history_db: str, b2_path: str = "data/citycast/models/gate-b2.pkl"):
+        super().__init__(history_db)
+        self.b2_path = b2_path
+        self._choice = None
+        self._predict = None
+        self._failed = False     # a choice we cannot act on: warned once, then closed
+
+    def _meta(self, key: str):
+        """The JSON value stored under `key`, or None. Raises ValueError for unreadable JSON."""
+        path = Path(self.history_db)
+        if not path.exists():
+            return None
+        try:
+            with closing(_open_ro(path)) as c:
+                row = c.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        except sqlite3.Error as e:
+            if not (isinstance(e, sqlite3.OperationalError) and "no such table" in str(e)):
+                log.warning("gate meta read failed: %r", e)
+            return None
+        return json.loads(row[0]) if row else None
+
+    def _fail(self, message: str, *args) -> bool:
+        self._failed = True
+        log.warning(message, *args)
+        return False
+
+    def _load(self) -> bool:
+        if self._choice is not None:
+            return True
+        if self._failed:
+            return False
+        try:
+            choice = self._meta("gate_choice")
+        except ValueError as e:
+            return self._fail("gate_choice is not valid JSON; not betting: %r", e)
+        if not choice:
+            return False
+        if not isinstance(choice, dict):
+            return self._fail("gate_choice is not an object; not betting: %r", choice)
+        winner = choice.get("winner")
+        if winner == "B0":
+            return False                       # the gate's answer is "don't bet"
+        if winner == "L1":
+            return self._fail("gate winner L1 needs the Laya sidecar; not betting")
+        if winner not in self.WINNERS:
+            return self._fail("gate_choice has an unknown winner %r; not betting", winner)
+        margin = choice.get("margin")
+        if isinstance(margin, bool) or not isinstance(margin, (int, float)) or not 0 <= margin < math.inf:
+            return self._fail("gate_choice %s has an unusable margin %r; not betting", winner, margin)
+        if winner == "B2":
+            try:
+                from citycast.meta import load_model
+                model = load_model(Path(self.b2_path))
+            except Exception as e:  # noqa: BLE001 - a missing/corrupt pickle must not break the cycle
+                return self._fail("gate B2 model %s could not be loaded; not betting: %r", self.b2_path, e)
+            self._predict = lambda rows: list(model.predict(pd.DataFrame(rows)))
+        else:
+            self._predict = lambda rows: [r["p_model"] for r in rows]
+        self._choice, self.min_edge = choice, float(margin)
+        return True
+
+    def forecast_for_event(self, markets, snapshot):
+        """Data faults in the stored forecast or choice fail closed with a warning. Anything
+        else (a bug in gate_features or the contender's predict) propagates so the cycle
+        reports it in bot_errors instead of hiding it."""
+        from citycast.decisions import gate_features
+        first = markets[0]
+        if first.station is None or first.metric is None or not self._load():
+            return None, None
+        row = self._latest(first.station, first.metric, first.event_date, snapshot.taken_at)
+        if row is None:
+            return None, None
+        try:
+            age = (datetime.fromisoformat(snapshot.taken_at) - datetime.fromisoformat(row[2])).total_seconds()
+            if age > self.MAX_AGE_S:
+                return None, None
+            pmf = {int(k): float(v) for k, v in json.loads(row[0]).items()}
+            quantiles = json.loads(row[3])
+            end_iso = climate_day_bounds(date.fromisoformat(first.event_date),
+                                         STATIONS[first.station][1])[1].isoformat()
+        except (ValueError, TypeError, KeyError, AttributeError, json.JSONDecodeError) as e:
+            log.warning("gate forecast data unreadable for %s: %r", first.event_ticker, e)
+            return None, None
+        rows, tickers = [], []
+        for m in markets:
+            ask = usable_ask(m)
+            if ask is None or m.close_time is None:
+                continue
+            rows.append(gate_features(station=m.station, metric=m.metric, event_date=m.event_date, lo=m.lo,
+                                      hi=m.hi, pmf=pmf, quantiles=quantiles, run_ext=row[4], bid=usable_bid(m),
+                                      ask=ask, asof_iso=snapshot.taken_at, close_iso=m.close_time,
+                                      climate_end_iso=end_iso))
+            tickers.append(m.ticker)
+        if not rows:
+            return None, None
+        probs = {t: float(p) for t, p in zip(tickers, self._predict(rows)) if math.isfinite(float(p))}
+        if not probs:
+            return None, None
+        return probs, {"source": "gate", "winner": self._choice["winner"], "citycast_issued_utc": row[2]}

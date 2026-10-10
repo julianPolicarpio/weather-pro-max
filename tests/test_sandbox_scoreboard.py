@@ -393,3 +393,42 @@ def test_settled_events_helper_continues_after_a_pinned_start():
                           (before[-1][0],)).fetchall()
         assert [tuple(r) for r in after] == [tuple(r) for r in before]
         assert c.execute("SELECT COUNT(*) FROM markets WHERE event_ticker='EV22'").fetchone()[0]
+
+
+# ---- the gate is scored per order, as a binary question --------------------------
+
+def _gate_bet(conn, ticker, sid, p_bot, event):
+    place(conn, Intent("gate", ticker, "yes", 1, 0.50, sid, p_bot, 0.5),
+          Fill("filled", 1, ((0.50, 1.0),), 0.50, 0.02), T, None)
+    record_candidates(conn, [Candidate(
+        bot="gate", ticker=ticker, series="KXHIGHNY", station="KNYC", metric="high",
+        event_date="2026-10-04", snapshot_id=sid, decided_at=T, p_bot=p_bot,
+        pmf_json=json.dumps({ticker: p_bot}), p_market=0.5, yes_bid=0.48, yes_ask=0.52,
+        spread=0.04, ask_size=3.0, minutes_to_close=None, fee_per_contract=0.02,
+        edge_after_fee=0.0, placed=True, reason="edge")])
+
+
+def _gate_card(a_wins):
+    with closing(connect(":memory:")) as conn:
+        open_account(conn, "gate", "bot")
+        conn.execute("UPDATE accounts SET start_cash = 1000.0 WHERE name = 'gate'")
+        conn.commit()
+        sid = record_snapshot(conn, _pair(0), T)
+        _gate_bet(conn, "EV0-A", sid, 0.9, "EV0")      # market devigs to 0.5 / 0.5
+        conn.execute("UPDATE markets SET result=? WHERE ticker='EV0-A'", ("yes" if a_wins else "no",))
+        conn.execute("UPDATE markets SET result=? WHERE ticker='EV0-B'", ("no" if a_wins else "yes",))
+        conn.execute("UPDATE orders SET payout=?", (1.0 if a_wins else 0.0,))
+        conn.commit()
+        return report(conn, "gate")
+
+
+def test_gate_is_scored_per_contract_on_a_winning_ticker():
+    sc = _gate_card(True)
+    assert sc.brier_n == 1 and sc.brier_events == 1
+    assert sc.brier_diff == pytest.approx((0.9 - 1) ** 2 - (0.5 - 1) ** 2)   # 0.01 - 0.25
+
+
+def test_gate_is_scored_per_contract_on_a_losing_ticker():
+    sc = _gate_card(False)
+    assert sc.brier_n == 1
+    assert sc.brier_diff == pytest.approx(0.9 ** 2 - 0.5 ** 2)               # 0.81 - 0.25

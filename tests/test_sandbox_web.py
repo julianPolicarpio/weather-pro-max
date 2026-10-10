@@ -117,7 +117,7 @@ def test_get_pages_do_not_create_accounts(tmp_path):
     # the POST still opens the accounts it needs
     r = c.post("/api/bet", json={"ticker": T69, "side": "yes", "contracts": 1, "price_cap": 0.25})
     assert r.json()["status"] == "filled"
-    assert rows(db, "SELECT COUNT(*) FROM accounts") == [(5,)]
+    assert rows(db, "SELECT COUNT(*) FROM accounts") == [(6,)]
 
 
 # ---- F12: Confirm is single-use and only for the values that were previewed ------

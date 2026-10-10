@@ -22,6 +22,10 @@ BOOT_N = 2000
 SEED = 20261004
 MANILA = ZoneInfo("Asia/Manila")
 
+# The gate returns an independent P(win) per contract, not one distribution per event, so its
+# Brier-vs-market is scored per order as a binary question, not as a multiclass event.
+BINARY_SCORED_ACCOUNTS = frozenset({"gate"})
+
 
 def bootstrap_mean_ci(values, n: int = BOOT_N, seed: int = SEED) -> tuple[float, float]:
     arr = np.asarray(values, dtype=float)
@@ -128,8 +132,9 @@ def report(conn: sqlite3.Connection, account: str, after_order_id: int | None = 
     diffs: list[float] = []
     diffs_by_event: dict[str, list[float]] = {}
     scored: set[tuple[int, str]] = set()
+    binary = account in BINARY_SCORED_ACCOUNTS
     for o in orders:
-        key = (o["snapshot_id"], o["event_ticker"])
+        key = (o["snapshot_id"], o["ticker"] if binary else o["event_ticker"])
         if o["snapshot_id"] is None or key in scored:
             continue
         cand = conn.execute("SELECT pmf_json FROM candidates WHERE bot=? AND ticker=? "
@@ -140,6 +145,15 @@ def report(conn: sqlite3.Connection, account: str, after_order_id: int | None = 
         if cand is None or winner is None or not market:
             continue
         bot = json.loads(cand["pmf_json"])
+        if binary:
+            if o["ticker"] not in bot or o["ticker"] not in market:
+                continue
+            y = 1.0 if winner == o["ticker"] else 0.0
+            diff = (bot[o["ticker"]] - y) ** 2 - (market[o["ticker"]] - y) ** 2
+            scored.add(key)
+            diffs.append(diff)
+            diffs_by_event.setdefault(o["event_ticker"], []).append(diff)
+            continue
         if not set(bot) <= set(market):
             # the market priced fewer buckets than the bot: scoring would charge the
             # market a full miss on a bucket it never quoted, a free win for the bot
