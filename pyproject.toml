@@ -26,6 +26,9 @@ dev = ["pytest>=8.0,<10"]
 # the whole app -- including the order bot's DRY-RUN path -- runs without it.
 # You only need this installed to actually arm the bot and place real orders.
 trade = ["cryptography>=42,<51"]
+# Laya bet/skip gate (plan 3). Declared only: install it in ~/projects/laya-weather-gate/.venv, never in
+# this .venv (torch/transformers would change packages the live desk depends on).
+laya = ["laya==0.4.1"]
 
 [project.scripts]
 highcast = "highcast.cli:main"
