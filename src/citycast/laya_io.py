@@ -64,6 +64,53 @@ def export(df: pd.DataFrame, path: Path) -> int:
     return len(df)
 
 
+def export_states(df: pd.DataFrame, path: Path) -> int:
+    """Write the model inputs only, for scoring elsewhere (Kaggle): one JSONL line per distinct
+    (ticker, asof_utc), sorted by it, as {"ticker", "asof_utc", "state"}. No outcome field is ever written."""
+    rows = df.drop_duplicates(["ticker", "asof_utc"]).sort_values(["ticker", "asof_utc"]).to_dict("records")
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w") as f:
+        for row in rows:
+            f.write(json.dumps({"ticker": row["ticker"], "asof_utc": row["asof_utc"], "state": state(row)}) + "\n")
+    return len(rows)
+
+
+def import_scores(conn, path: Path, contender: str) -> int:
+    """Store P(win) scores computed elsewhere, from JSONL lines {"ticker", "asof_utc", "p_win"}.
+    Every line is validated before anything is written (p_win finite and in [0, 1], key present in
+    decision_rows, no key twice); the first bad line raises ValueError and nothing is stored."""
+    known = {(t, a) for t, a in conn.execute("SELECT ticker, asof_utc FROM decision_rows")}
+    seen, out = set(), []
+    for n, line in enumerate(Path(path).read_text().splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+            ticker, asof, p = rec["ticker"], rec["asof_utc"], rec["p_win"]
+        except (ValueError, KeyError, TypeError) as e:
+            raise ValueError(f"line {n}: not a {{ticker, asof_utc, p_win}} JSON object ({e!r})") from e
+        if isinstance(p, bool) or not isinstance(p, (int, float)) or not math.isfinite(p) or not 0 <= p <= 1:
+            raise ValueError(f"line {n}: p_win must be a number in [0, 1], got {p!r}")
+        key = (ticker, asof)
+        if not (isinstance(ticker, str) and isinstance(asof, str)) or key not in known:
+            raise ValueError(f"line {n}: {ticker} @ {asof} is not in decision_rows")
+        if key in seen:
+            raise ValueError(f"line {n}: duplicate key {ticker} @ {asof}")
+        seen.add(key)
+        out.append((contender, ticker, asof, float(p)))
+    with conn:
+        conn.executemany("INSERT OR REPLACE INTO gate_scores VALUES (?,?,?,?)", out)
+    return len(out)
+
+
+def missing(df: pd.DataFrame, contender: str, conn) -> int:
+    """Rows of `df` with no stored score under `contender` (what `score` would have to compute)."""
+    cached = {(t, a) for t, a in conn.execute("SELECT ticker, asof_utc FROM gate_scores WHERE contender=?",
+                                              (contender,))}
+    return sum(k not in cached for k in zip(df["ticker"], df["asof_utc"]))
+
+
 def score(df: pd.DataFrame, predict_fn: Callable[[list[str]], list[float]], contender: str, conn,
           batch: int = 256) -> np.ndarray:
     """P(win) per row of `df`, in order. Stored scores are reused; each chunk of new scores is

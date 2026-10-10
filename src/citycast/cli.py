@@ -7,6 +7,8 @@ from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import pandas as pd
+
 from citycast import (coverage, dataset, db, decisions, evaluate, final_report, gate_eval, laya_io, live, meta,
                       walkforward)
 from citycast.backfill import run_chunks
@@ -51,6 +53,18 @@ def _chunks_for(source, paced, conn, stations, since, today, candle_since=None,
     raise ValueError(source)
 
 
+def _cached_only(_states):
+    raise AssertionError("all scores are cached")
+
+
+def _laya_fn(model_ref, frames, key, conn):
+    """Laya is loaded (the slow, Laya-venv-only step) only when a row of `frames` has no stored score
+    under `key`; with every score imported, nothing is scored and the model is never touched."""
+    if sum(laya_io.missing(f, key, conn) for f in frames) == 0:
+        return _cached_only
+    return laya_io.router_predict_fn(model_ref)
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="citycast")
     p.add_argument("--db", default=str(db.DEFAULT_PATH))
@@ -76,11 +90,14 @@ def main(argv: list[str] | None = None) -> int:
     pr = sub.add_parser("predict")
     pr.add_argument("--no-refresh", action="store_true")
     dec = sub.add_parser("decisions")
-    dec.add_argument("action", choices=("build", "export"))
+    dec.add_argument("action", choices=("build", "export", "export-states"))
     dec.add_argument("--out", default="data/citycast/laya")
     gate = sub.add_parser("gate")
-    gate.add_argument("action", choices=("score", "final-report"))
-    gate.add_argument("--contender", choices=("B2", "L0", "L1"))
+    gate.add_argument("action", choices=("score", "final-report", "import-scores"))
+    gate.add_argument("file", nargs="?",
+                      help="import-scores: JSONL of {ticker, asof_utc, p_win} lines, scored elsewhere (Kaggle)")
+    gate.add_argument("--contender", choices=("B2", "L0", "L1"),
+                      help="score: B2, L0 or L1; import-scores: L0 or L1 (L1 also needs a pinned --model-ref)")
     gate.add_argument("--model-ref")
     gate.add_argument("--force", action="store_true")
     args = p.parse_args(argv)
@@ -90,6 +107,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.contender == "L1":
             if not args.model_ref:
                 p.error("gate score --contender L1 requires --model-ref REPO@REV")
+            try:
+                final_report.pinned_ref(args.model_ref)
+            except ValueError as e:
+                p.error(str(e))
+    if args.cmd == "gate" and args.action == "import-scores":
+        if not args.file:
+            p.error("gate import-scores requires FILE (a JSONL of scores)")
+        if args.contender not in ("L0", "L1"):
+            p.error("gate import-scores requires --contender L0 or L1")
+        if args.contender == "L1":
+            if not args.model_ref:
+                p.error("gate import-scores --contender L1 requires --model-ref REPO@REV")
             try:
                 final_report.pinned_ref(args.model_ref)
             except ValueError as e:
@@ -196,6 +225,26 @@ def main(argv: list[str] | None = None) -> int:
             n_va = laya_io.export(s["validation"], out / "validation.jsonl")
             print(json.dumps({"train": n_tr, "validation": n_va, "dir": str(out)}))
             return 0
+        if args.cmd == "decisions" and args.action == "export-states":
+            # Model inputs only (no outcome column): scoring and reporting stay local, so the once-only rule holds.
+            s = gate_eval.split(gate_eval.load(conn))
+            frame = pd.concat([s["validation"], s["test"]])
+            path = Path(args.out) / "states.jsonl"
+            laya_io.export_states(frame, path)
+            print(json.dumps({"validation": len(s["validation"]), "test": len(s["test"]), "path": str(path)}))
+            return 0
+        if args.cmd == "gate" and args.action == "import-scores":
+            key = "L0" if args.contender == "L0" else final_report.l1_key(args.model_ref)
+            try:
+                n = laya_io.import_scores(conn, args.file, key)
+            except (ValueError, OSError) as e:
+                print(f"import-scores: {e}", file=sys.stderr)
+                return 2
+            sp = gate_eval.split(gate_eval.load(conn))
+            out = {"written": n, "missing_validation": laya_io.missing(sp["validation"], key, conn),
+                   "missing_test": laya_io.missing(sp["test"], key, conn)}
+            print(json.dumps(out))
+            return 3 if out["missing_validation"] or out["missing_test"] else 0   # partial import: visible at once
         if args.cmd == "gate" and args.action == "score":
             s = gate_eval.split(gate_eval.load(conn))
             if args.contender == "B2":
@@ -207,14 +256,14 @@ def main(argv: list[str] | None = None) -> int:
                                          [("B2", t, a, float(x)) for t, a, x
                                           in zip(s[k]["ticker"], s[k]["asof_utc"], m.predict(s[k]))])
             else:
+                key = "L0" if args.contender == "L0" else final_report.l1_key(args.model_ref)
                 try:
-                    fn = laya_io.router_predict_fn(None if args.contender == "L0" else args.model_ref)
+                    fn = _laya_fn(None if args.contender == "L0" else args.model_ref, [s["validation"]], key, conn)
                 except ModuleNotFoundError as e:
                     if e.name != "laya":    # torch, peft...: a different problem, shown as it is
                         raise
                     print(NO_LAYA, file=sys.stderr)
                     return 2
-                key = "L0" if args.contender == "L0" else final_report.l1_key(args.model_ref)
                 laya_io.score(s["validation"], fn, key, conn)
             print(json.dumps({"scored": args.contender}))
             return 0
@@ -234,14 +283,15 @@ def main(argv: list[str] | None = None) -> int:
             except ValueError as e:
                 raise RuntimeError(f"laya_l1_ref invalid: {e}") from e
             b2 = meta.load_model(B2_PATH)
-            try:
-                fns = {"L0": laya_io.router_predict_fn(None), "L1": laya_io.router_predict_fn(ref)}
+            s = gate_eval.split(gate_eval.load(conn))
+            try:   # Laya loads only for a contender whose validation or test scores are not all stored
+                fns = {"L0": _laya_fn(None, [s["validation"], s["test"]], "L0", conn),
+                       "L1": _laya_fn(ref, [s["validation"], s["test"]], key, conn)}
             except ModuleNotFoundError as e:
                 if e.name != "laya":    # torch, peft...: a different problem, shown as it is
                     raise
                 print(NO_LAYA, file=sys.stderr)
                 return 2
-            s = gate_eval.split(gate_eval.load(conn))
             scores = {"B2": (None, b2.predict(s["validation"]), b2.predict(s["test"]))}
             for name, fn in fns.items():
                 cached_as = key if name == "L1" else name     # L1 scores are cached per exact model revision

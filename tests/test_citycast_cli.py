@@ -314,7 +314,7 @@ def test_gate_score_l1_is_cached_per_model_ref_not_reused_across_refs(tmp_path, 
     monkeypatch.setattr(cli.laya_io, "router_predict_fn", fake_router)
     for ref in (REF, REF_B, REF):
         assert cli.main(["--db", str(dbp), "gate", "score", "--contender", "L1", "--model-ref", ref]) == 0
-    assert loaded == [REF, REF_B, REF]
+    assert loaded == [REF, REF_B]                       # the repeat of A has nothing missing: Laya is not loaded
     assert predicted == [(REF, 60), (REF_B, 60)]       # B is scored afresh; the repeat of A is a cache hit
     with closing(db.connect(dbp)) as c:
         assert sorted(r[0] for r in c.execute("SELECT DISTINCT contender FROM gate_scores")) \
@@ -442,3 +442,130 @@ def test_final_report_force_gets_past_ensure_not_run(tmp_path, monkeypatch, caps
     with closing(db.connect(dbp)) as c:
         assert c.execute("SELECT value FROM meta WHERE key='final_report_run_at'").fetchone()[0] \
             != "2026-10-08T00:00:00+00:00"
+
+
+# ---- Task 8a: Kaggle hand-off ----
+
+def test_decisions_export_states_writes_validation_and_test_inputs_only(tmp_path, capsys):
+    dbp = _db(tmp_path)
+    out = tmp_path / "laya"
+    assert cli.main(["--db", str(dbp), "decisions", "export-states", "--out", str(out)]) == 0
+    res = _last(capsys)
+    assert res == {"validation": 60, "test": 60, "path": str(out / "states.jsonl")}
+    text = (out / "states.jsonl").read_text()
+    recs = [json.loads(line) for line in text.splitlines()]
+    assert len(recs) == 120 and all(sorted(r) == ["asof_utc", "state", "ticker"] for r in recs)
+    months = {r["ticker"][:7] for r in recs}
+    assert months == {"2026-05", "2026-08"}               # no train rows
+    assert "won" not in text and "profit_if_bet" not in text
+    assert [p.name for p in out.iterdir()] == ["states.jsonl"]
+
+
+def _scores_file(tmp_path, dbp, only=None):
+    with closing(db.connect(dbp)) as c:
+        rows = c.execute("SELECT ticker, asof_utc FROM decision_rows WHERE event_date >= '2026-04-01' "
+                         "ORDER BY ticker").fetchall()
+    f = tmp_path / "scores.jsonl"
+    f.write_text("".join(json.dumps({"ticker": r[0], "asof_utc": r[1], "p_win": 0.4}) + "\n"
+                         for r in rows[:only]))
+    return f, len(rows[:only])
+
+
+def test_gate_import_scores_l0(tmp_path, capsys):
+    dbp = _db(tmp_path)
+    f, n = _scores_file(tmp_path, dbp)
+    assert cli.main(["--db", str(dbp), "gate", "import-scores", str(f), "--contender", "L0"]) == 0   # complete: exit 0
+    assert _last(capsys) == {"written": n, "missing_validation": 0, "missing_test": 0}
+    with closing(db.connect(dbp)) as c:
+        assert c.execute("SELECT COUNT(*) FROM gate_scores WHERE contender='L0'").fetchone()[0] == n
+
+
+def test_gate_import_scores_l1_is_keyed_by_the_pinned_ref(tmp_path, capsys):
+    dbp = _db(tmp_path)
+    f, n = _scores_file(tmp_path, dbp)
+    assert cli.main(["--db", str(dbp), "gate", "import-scores", str(f), "--contender", "L1",
+                     "--model-ref", REF]) == 0
+    assert _last(capsys) == {"written": n, "missing_validation": 0, "missing_test": 0}
+    with closing(db.connect(dbp)) as c:
+        assert [r[0] for r in c.execute("SELECT DISTINCT contender FROM gate_scores")] == [f"L1@{REF}"]
+
+
+@pytest.mark.parametrize("extra", [[], ["--model-ref", "me/laya@main"], ["--model-ref", "me/laya"]])
+def test_gate_import_scores_l1_needs_a_pinned_ref(tmp_path, capsys, extra):
+    dbp = _db(tmp_path)
+    f, _ = _scores_file(tmp_path, dbp)
+    with pytest.raises(SystemExit) as e:
+        cli.main(["--db", str(dbp), "gate", "import-scores", str(f), "--contender", "L1", *extra])
+    assert e.value.code == 2 and "repo@" in capsys.readouterr().err.lower()
+    with closing(db.connect(dbp)) as c:
+        assert c.execute("SELECT COUNT(*) FROM gate_scores").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("argv_tail", [["--contender", "L0"], ["FILE"], ["FILE", "--contender", "B2"]])
+def test_gate_import_scores_needs_a_file_and_an_l_contender(tmp_path, argv_tail):
+    dbp = _db(tmp_path)
+    f, _ = _scores_file(tmp_path, dbp)
+    argv_tail = [str(f) if a == "FILE" else a for a in argv_tail]
+    with pytest.raises(SystemExit) as e:
+        cli.main(["--db", str(dbp), "gate", "import-scores", *argv_tail])
+    assert e.value.code == 2
+
+
+def test_gate_import_scores_bad_file_exits_2_and_stores_nothing(tmp_path, capsys):
+    dbp = _db(tmp_path)
+    f = tmp_path / "bad.jsonl"
+    f.write_text(json.dumps({"ticker": "nope", "asof_utc": "x", "p_win": 0.5}) + "\n")
+    assert cli.main(["--db", str(dbp), "gate", "import-scores", str(f), "--contender", "L0"]) == 2
+    assert "line 1" in capsys.readouterr().err
+    with closing(db.connect(dbp)) as c:
+        assert c.execute("SELECT COUNT(*) FROM gate_scores").fetchone()[0] == 0
+
+
+def _store_all_scores(dbp, contender):
+    with closing(db.connect(dbp)) as c, c:
+        c.execute("INSERT INTO gate_scores SELECT ?, ticker, asof_utc, 0.5 FROM decision_rows "
+                  "WHERE event_date >= '2026-04-01' AND event_date < '2026-10-01'", (contender,))
+
+
+def test_gate_score_with_every_score_imported_never_loads_laya(tmp_path, monkeypatch, capsys):
+    dbp = _db(tmp_path)
+    _store_all_scores(dbp, "L0")
+    monkeypatch.setattr(cli.laya_io, "router_predict_fn", lambda *a, **k: pytest.fail("Laya must not load"))
+    assert cli.main(["--db", str(dbp), "gate", "score", "--contender", "L0"]) == 0
+    assert _last(capsys) == {"scored": "L0"}
+
+
+def test_final_report_with_every_score_imported_runs_without_laya(tmp_path, monkeypatch, capsys):
+    dbp = _db(tmp_path, n_rows=180, laya_l1_ref=json.dumps(REF))
+    _store_all_scores(dbp, "L0")
+    _store_all_scores(dbp, f"L1@{REF}")
+    monkeypatch.setattr(cli.meta, "load_model", lambda path: _FakeB2(()))
+    monkeypatch.setattr(cli, "REPORT_DIR", tmp_path / "reports")
+
+    def no_laya(*a, **k):
+        raise AssertionError("Laya must not be built when every score is imported")
+    monkeypatch.setattr(cli.laya_io, "router_predict_fn", no_laya)
+    assert cli.main(["--db", str(dbp), "gate", "final-report"]) == 0
+    assert _last(capsys)["winner"] in {"B0", "B1", "B2", "L0", "L1"}
+    assert len(list((tmp_path / "reports").glob("gate-final-*.md"))) == 1
+
+
+def test_final_report_builds_laya_only_for_the_contender_with_missing_scores(tmp_path, monkeypatch, capsys):
+    dbp = _db(tmp_path, n_rows=180, laya_l1_ref=json.dumps(REF))
+    _store_all_scores(dbp, "L0")                       # L1 has nothing imported
+    scored, refs = [], []
+    _stub_final(monkeypatch, tmp_path, scored)
+    monkeypatch.setattr(cli.laya_io, "router_predict_fn", lambda ref, device=None: refs.append(ref) or (lambda s: s))
+    assert cli.main(["--db", str(dbp), "gate", "final-report"]) == 0
+    assert refs == [REF]
+
+
+def test_gate_import_scores_partial_file_exits_3_with_the_missing_counts(tmp_path, capsys):
+    dbp = _db(tmp_path)
+    f, _ = _scores_file(tmp_path, dbp)                 # validation + test rows, ordered by ticker: 60 + 60
+    lines = f.read_text().splitlines()
+    f.write_text("\n".join(lines[:60 - 5] + lines[60:60 + 20]) + "\n")   # 55 of 60 validation, 20 of 60 test
+    assert cli.main(["--db", str(dbp), "gate", "import-scores", str(f), "--contender", "L0"]) == 3
+    assert _last(capsys) == {"written": 75, "missing_validation": 5, "missing_test": 40}
+    with closing(db.connect(dbp)) as c:                # the valid part is stored
+        assert c.execute("SELECT COUNT(*) FROM gate_scores WHERE contender='L0'").fetchone()[0] == 75

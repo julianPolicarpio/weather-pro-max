@@ -7,7 +7,8 @@ import pandas as pd
 import pytest
 
 from citycast import db
-from citycast.laya_io import QUESTION, export, sample_train, score, state, to_record
+from citycast.laya_io import (QUESTION, export, export_states, import_scores, missing, sample_train, score,
+                              state, to_record)
 
 ROW = {"station": "KLAX", "metric": "high", "event_date": "2026-01-05", "lo": 66, "hi": 67,
        "hours_to_close": 14.52, "lead_h": 20.0, "p_model": 0.41, "model_median": 66.8, "model_iqr": 3.1,
@@ -202,3 +203,80 @@ def test_scoring_resumes_after_a_crash(tmp_path):
             return [0.8] * len(states)
         p = score(df, good, "L1", c, batch=1)
     assert sizes == [1] and np.allclose(p, [0.6, 0.8])
+
+
+# ---- Task 8a: Kaggle hand-off (state export, score import, lazy Laya) ----
+
+def test_export_states_has_exactly_three_keys_and_no_outcomes(tmp_path):
+    df = pd.DataFrame([{**ROW, "ticker": "B", "profit_if_bet": 0.68}, {**ROW, "ticker": "A", "profit_if_bet": -0.3}])
+    path = tmp_path / "out" / "states.jsonl"
+    assert export_states(df, path) == 2
+    text = path.read_text()
+    recs = [json.loads(line) for line in text.splitlines()]
+    assert all(sorted(r) == ["asof_utc", "state", "ticker"] for r in recs)
+    assert recs[0]["state"] == state(ROW)
+    assert "won" not in text and "profit_if_bet" not in text and "p_model" not in set().union(*recs)
+
+
+def test_export_states_dedups_and_sorts_by_ticker_then_asof(tmp_path):
+    a1, a2 = "2026-01-05T00:00:00+00:00", "2026-01-05T06:00:00+00:00"
+    df = pd.DataFrame([{**ROW, "ticker": "B", "asof_utc": a1}, {**ROW, "ticker": "A", "asof_utc": a2},
+                       {**ROW, "ticker": "A", "asof_utc": a1}, {**ROW, "ticker": "A", "asof_utc": a2}])
+    assert export_states(df, tmp_path / "s.jsonl") == 3
+    keys = [(r["ticker"], r["asof_utc"]) for r in map(json.loads, (tmp_path / "s.jsonl").read_text().splitlines())]
+    assert keys == [("A", a1), ("A", a2), ("B", a1)]
+
+
+def _decision_conn(tmp_path, tickers=("A", "B", "C")):
+    c = db.connect(tmp_path / "h.db")
+    with c:
+        db.upsert(c, "decision_rows", [
+            {"ticker": t, "asof_utc": ROW["asof_utc"], "event_ticker": "E", "station": "KLAX", "metric": "high",
+             "event_date": "2026-05-05", "won": 1, "profit_if_bet": 0.5} for t in tickers])
+    return c
+
+
+def _write_scores(path, recs):
+    path.write_text("\n".join(r if isinstance(r, str) else json.dumps(r) for r in recs) + "\n")
+
+
+def _rec(t, p):
+    return {"ticker": t, "asof_utc": ROW["asof_utc"], "p_win": p}
+
+
+def test_import_scores_happy_path(tmp_path):
+    f = tmp_path / "scores.jsonl"
+    _write_scores(f, [_rec("A", 0.0), _rec("B", 0.25), _rec("C", 1.0)])
+    with closing(_decision_conn(tmp_path)) as c:
+        with c:
+            c.execute("INSERT INTO gate_scores VALUES ('L0','A',?,0.9)", (ROW["asof_utc"],))   # replaced, not duplicated
+        assert import_scores(c, f, "L0") == 3
+        got = {r["ticker"]: r["p_win"] for r in c.execute("SELECT ticker, p_win FROM gate_scores WHERE contender='L0'")}
+        assert got == {"A": 0.0, "B": 0.25, "C": 1.0}
+
+
+@pytest.mark.parametrize("bad,line_no", [
+    (_rec("B", 1.5), 2), (_rec("B", -0.01), 2), (_rec("B", float("nan")), 2), (_rec("B", float("inf")), 2),
+    (_rec("B", None), 2), (_rec("B", "0.5"), 2), (_rec("B", True), 2),
+    (_rec("ZZ", 0.5), 2),                                    # unknown key
+    (_rec("A", 0.5), 2),                                     # duplicate of line 1
+    ("{not json", 2), ({"ticker": "B", "p_win": 0.5}, 2),    # unparsable / missing field
+])
+def test_import_scores_rejects_and_writes_nothing(tmp_path, bad, line_no):
+    f = tmp_path / "scores.jsonl"
+    _write_scores(f, [_rec("A", 0.4), bad, _rec("C", 0.6)])
+    with closing(_decision_conn(tmp_path)) as c:
+        with pytest.raises(ValueError, match=f"line {line_no}"):
+            import_scores(c, f, "L0")
+        assert c.execute("SELECT COUNT(*) FROM gate_scores").fetchone()[0] == 0
+
+
+def test_missing_counts_rows_without_a_cached_score_under_the_key(tmp_path):
+    df = pd.DataFrame([{**ROW, "ticker": t} for t in ("A", "B", "C")])
+    with closing(db.connect(tmp_path / "h.db")) as c:
+        assert missing(df, "L0", c) == 3
+        _insert_scores(c, "L0", [("A", 0.1), ("B", 0.2)])
+        _insert_scores(c, "L1@x/y@abcdef1", [("C", 0.3)])
+        assert missing(df, "L0", c) == 1
+        assert missing(df[df["ticker"] != "C"], "L0", c) == 0
+        assert missing(df.iloc[0:0], "L0", c) == 0
