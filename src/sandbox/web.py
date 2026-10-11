@@ -155,6 +155,19 @@ def create_app(db_path: str, get=None) -> FastAPI:
                    day_text=views.day_text(d) if d else "")
         return templates.TemplateResponse(request, "markets.html", ctx)
 
+    @app.get("/portfolio", response_class=HTMLResponse)
+    def portfolio(request: Request, tab: str = "open"):
+        with closing(_read_conn()) as conn:
+            ctx = _frame(conn, request, "portfolio")
+            acct = ctx["account"]
+            if acct:
+                status = confirmation_status(conn, acct)
+                ctx.update(score=report(conn, acct), verdict=verdict_text(status), label=labels.get(acct, ""),
+                           settled_rows=views.settled_positions(conn, acct),
+                           out_of_cash=views.out_of_cash(ctx["bot"]["cash"], ctx["snap"]))
+        ctx.update(n_events_required=N_EVENTS_REQUIRED, tab="settled" if tab == "settled" else "open")
+        return templates.TemplateResponse(request, "portfolio.html", ctx)
+
     @app.get("/api/latest-snapshot")
     def latest_snapshot():
         with closing(_read_conn()) as conn:

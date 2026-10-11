@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Portfolio{% endblock %}
+{% block body %}
+<div class="layout">
+{% include "_rail.html" %}
+<main class="content">
+{% if not account %}
+  <p class="empty">No accounts yet. Run <code>sandbox init</code>.</p>
+{% else %}
+  <div class="head"><h1>{{ account }}</h1><span class="muted">{{ label }}</span></div>
+  {% if out_of_cash %}
+  <p class="notice" role="status"><b>Out of cash.</b> ${{ "%.2f"|format(bot.cash) }} left of the $5.00 start. No new bets until open positions settle and pay out.</p>
+  {% endif %}
+  <div class="kpis">
+    <div class="kpi"><small>Cash</small><b>${{ "%.2f"|format(bot.cash) }}</b></div>
+    <div class="kpi"><small>At risk in open positions</small><b>${{ "%.2f"|format(pos.at_risk) }}</b></div>
+    <div class="kpi"><small>Settled profit</small><b class="{{ 'up' if bot.profit > 0 else 'down' if bot.profit < 0 else '' }}">{{ bot.profit | money }}</b></div>
+    <div class="kpi"><small>Open · settled</small><b>{{ pos.count }} · {{ bot.settled }}</b></div>
+  </div>
+  {% include "_unlock.html" %}
+  <div class="tabs" role="tablist" aria-label="Positions">
+    <button role="tab" id="t-open" aria-controls="p-open" aria-selected="{{ 'true' if tab == 'open' else 'false' }}" tabindex="{{ 0 if tab == 'open' else -1 }}">Open ({{ pos.count }})</button>
+    <button role="tab" id="t-settled" aria-controls="p-settled" aria-selected="{{ 'true' if tab == 'settled' else 'false' }}" tabindex="{{ 0 if tab == 'settled' else -1 }}">Settled ({{ settled_rows | length }})</button>
+  </div>
+  <div role="tabpanel" id="p-open" aria-labelledby="t-open" {% if tab != 'open' %}hidden{% endif %}>
+    {% if pos.count == 0 %}<p class="empty">No open positions. {{ account }} bets at its next decision hour.</p>
+    {% else %}
+    <div class="table-scroll" tabindex="0" role="region" aria-label="Open positions">
+    <table>
+      <thead><tr><th>Market</th><th>Side</th><th class="n">Paid</th><th class="n">Mark</th><th class="n">Unrealized</th><th>Status</th></tr></thead>
+      <tbody>
+      {% if pos.live %}<tr class="grp"><td colspan="6">Live · {{ pos.live | length }} · price still moving</td></tr>
+      {% for r in pos.live %}<tr><td>{{ r.title }}</td><td>{{ r.side | upper }} ×{{ r.n }}</td><td class="n">{{ r.paid_c }}¢</td>
+        <td class="n">{{ (r.mark_c ~ "¢") if r.mark_c is not none else "–" }}</td>
+        <td class="n {{ 'up' if (r.unrealized_c or 0) > 0 else 'down' if (r.unrealized_c or 0) < 0 else '' }}">{{ r.unrealized_c | cents if r.unrealized_c is not none else "–" }}</td>
+        <td>{{ r.status }}</td></tr>{% endfor %}{% endif %}
+      {% if pos.awaiting %}<tr class="grp"><td colspan="6">Awaiting settlement · {{ pos.awaiting | length }} · day over, NWS report pending</td></tr>
+      {% for r in pos.awaiting %}<tr><td>{{ r.title }}</td><td>{{ r.side | upper }} ×{{ r.n }}</td><td class="n">{{ r.paid_c }}¢</td>
+        <td class="n muted">–</td><td class="n muted">–</td><td>{{ r.status }}</td></tr>{% endfor %}{% endif %}
+      </tbody>
+    </table>
+    </div>
+    {% endif %}
+  </div>
+  <div role="tabpanel" id="p-settled" aria-labelledby="t-settled" {% if tab != 'settled' %}hidden{% endif %}>
+    {% if not settled_rows %}<p class="empty">No settled bets yet. Positions settle when the NWS final report posts.</p>
+    {% else %}
+    <div class="table-scroll" tabindex="0" role="region" aria-label="Settled bets">
+    <table>
+      <thead><tr><th>Market</th><th>Side</th><th class="n">Paid</th><th class="n">Payout</th><th class="n">Realized</th><th>Settled</th></tr></thead>
+      <tbody>{% for r in settled_rows %}<tr><td>{{ r.title }}</td><td>{{ r.side | upper }} ×{{ r.n }}</td><td class="n">{{ r.paid_c }}¢</td>
+        <td class="n">${{ "%.2f"|format(r.payout) }}</td>
+        <td class="n {{ 'up' if r.realized > 0 else 'down' if r.realized < 0 else '' }}">{{ r.realized | money }}</td>
+        <td>{{ r.settled_at | manila }}</td></tr>{% endfor %}</tbody>
+    </table>
+    </div>
+    {% endif %}
+  </div>
+{% endif %}
+</main>
+</div>
+<script>
+(() => {   // ARIA tabs: click, Left/Right arrows switch panels (spec §7)
+  const tabs = [...document.querySelectorAll('[role="tab"]')];
+  const show = (t) => {
+    tabs.forEach((x) => {
+      const on = x === t;
+      x.setAttribute('aria-selected', on ? 'true' : 'false');
+      x.tabIndex = on ? 0 : -1;
+      document.getElementById(x.getAttribute('aria-controls')).hidden = !on;
+    });
+    t.focus();
+  };
+  tabs.forEach((t, i) => {
+    t.addEventListener('click', () => show(t));
+    t.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight') show(tabs[(i + 1) % tabs.length]);
+      if (e.key === 'ArrowLeft') show(tabs[(i - 1 + tabs.length) % tabs.length]);
+    });
+  });
+})();
+</script>
+{% endblock %}

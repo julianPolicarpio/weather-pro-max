@@ -1,0 +1,18 @@
+<section class="unlock" aria-labelledby="unlock-{{ account }}">
+  <h2 id="unlock-{{ account }}">Real-money unlock: {{ verdict }}</h2>
+  <p class="muted">Counts are lifetime. When every row passes, the bot is graded again on a fresh window of new city-days before it unlocks.</p>
+  <div class="chk"><span>Settled bets</span><span>{{ score.settled_bets }} / {{ n_required }}</span>
+    <span class="track" aria-hidden="true"><i style="width:{{ [100, (score.settled_bets * 100) // n_required] | min }}%"></i></span></div>
+  <div class="chk"><span>Distinct events</span><span>{{ score.n_events }} / {{ n_events_required }}</span>
+    <span class="track" aria-hidden="true"><i style="width:{{ [100, (score.n_events * 100) // n_events_required] | min }}%"></i></span></div>
+  <div class="chk"><span>Bets scored against the market</span><span>{{ score.brier_n }} / {{ n_required }}</span>
+    <span class="track" aria-hidden="true"><i style="width:{{ [100, (score.brier_n * 100) // n_required] | min }}%"></i></span></div>
+  <div class="chk"><span>Scored events</span><span>{{ score.brier_events }} / {{ n_events_required }}</span>
+    <span class="track" aria-hidden="true"><i style="width:{{ [100, (score.brier_events * 100) // n_events_required] | min }}%"></i></span></div>
+  <div class="chk"><span>Profit 95% CI above zero</span>
+    <span class="{{ 'up' if score.profit_pass else 'down' }}">{{ "yes" if score.profit_pass else "not yet" }}</span>
+    <span class="muted">{{ "per bet [%.3f, %.3f]"|format(*score.profit_ci) if score.profit_ci else "not enough settled bets" }}</span></div>
+  <div class="chk"><span>More accurate than market</span>
+    <span class="{{ 'up' if score.score_pass else 'muted' if score.brier_diff is none else 'down' }}">{{ "yes" if score.score_pass else ("not scored yet" if score.brier_diff is none else "no") }}</span>
+    <span class="muted">{% if score.brier_diff is not none %}Brier diff {{ "%+.2f"|format(score.brier_diff) }}{% if score.brier_ci %} [{{ "%+.2f"|format(score.brier_ci[0]) }}, {{ "%+.2f"|format(score.brier_ci[1]) }}]{% endif %}{% if score.brier_diff > 0 %}, worse than the market{% endif %}{% endif %}</span></div>
+</section>

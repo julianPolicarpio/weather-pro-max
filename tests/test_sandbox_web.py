@@ -111,7 +111,7 @@ def test_get_pages_do_not_create_accounts(tmp_path):
     with closing(connect(db)) as conn:                 # schema only, no accounts
         record_snapshot(conn, three_buckets(), utc_now_iso())
     c = TestClient(create_app(db, get=lambda path, params=None: book_payload(no=[(0.80, 5)])))
-    for page in ("/", "/bet", "/scoreboard", "/log"):
+    for page in ("/", "/bet", "/scoreboard", "/log", "/portfolio"):
         assert c.get(page).status_code == 200, page
     assert rows(db, "SELECT COUNT(*) FROM accounts") == [(0,)]
     # the POST still opens the accounts it needs
@@ -212,10 +212,10 @@ def test_every_get_uses_readonly_without_database_changes(tmp_path, monkeypatch)
     monkeypatch.setattr(web, 'connect_readonly', readonly, raising=False)
     monkeypatch.setattr(web, 'connect', forbidden)
     before = Path(db).read_bytes()
-    for page in ('/', '/bet', '/scoreboard', '/log'):
+    for page in ('/', '/bet', '/scoreboard', '/log', '/portfolio'):
         assert c.get(page).status_code == 200
     assert c.get('/api/preview', params={**BET, 'ticker': T69}).status_code == 200
-    assert len(calls) == 5
+    assert len(calls) == 6
     assert Path(db).read_bytes() == before
 
 
@@ -233,7 +233,7 @@ NOT_INITIALISED = "sandbox DB not initialised — run `sandbox init` first"
 
 
 def _assert_503_explains(c):
-    for page in ('/', '/bet', '/scoreboard', '/log'):
+    for page in ('/', '/bet', '/scoreboard', '/log', '/portfolio'):
         r = c.get(page)
         assert r.status_code == 503, page
         assert NOT_INITIALISED in r.text and 'Weather Pro Max' in r.text, page
@@ -302,3 +302,41 @@ def test_freshness_shows_no_snapshot_hint(tmp_path):
     (tmp_path / "y").mkdir()
     c, _ = client(tmp_path / "y", snapshot=False)
     assert "No snapshots yet" in c.get("/").text
+
+
+def test_portfolio_page_shows_figures_unlock_and_tabs(tmp_path):
+    c, _ = client(tmp_path)
+    c.post("/api/bet", json={"ticker": T69, "side": "yes", "contracts": 1, "price_cap": 0.25})
+    html = c.get("/portfolio", params={"account": "manual", "all": "1"}).text
+    assert "Real-money unlock" in html and "Settled bets" in html and "0 / 100" in html
+    assert 'role="tablist"' in html and "Open (1)" in html and "Settled (0)" in html
+    # the helper markets closed on 2026-10-05, before the real clock: the bet awaits settlement
+    assert "Awaiting settlement · 1" in html and "Out of cash" not in html
+    assert "No settled bets yet" in html
+    assert 'class="table-scroll"' in html
+
+
+def test_portfolio_out_of_cash_notice(tmp_path):
+    c, db = client(tmp_path)
+    with closing(connect(db)) as conn:
+        conn.execute("INSERT INTO orders(account, ticker, side, contracts_requested, price_cap, snapshot_id, "
+                     "decided_at, status, filled_contracts, cost, fee, levels_json) "
+                     "VALUES ('citycast', ?, 'yes', 1, 0.5, NULL, ?, 'filled', 1, 4.99, 0.01, '[]')",
+                     (T69, utc_now_iso()))
+        conn.commit()
+    html = c.get("/portfolio", params={"account": "citycast"}).text
+    assert "Out of cash." in html and "$0.00 left of the $5.00 start" in html
+
+
+def test_portfolio_settled_tab_is_selected_by_param(tmp_path):
+    c, _ = client(tmp_path)
+    html = c.get("/portfolio", params={"tab": "settled"}).text
+    assert 'id="t-settled" aria-controls="p-settled" aria-selected="true"' in html
+
+
+def test_unlock_checklist_lists_every_floor(tmp_path):
+    c, _ = client(tmp_path)
+    html = c.get("/portfolio").text
+    for row in ("Settled bets", "Distinct events", "Bets scored against the market", "Scored events",
+                "Profit 95% CI above zero", "More accurate than market", "fresh window"):
+        assert row in html, row
