@@ -1,17 +1,20 @@
 {% extends "base.html" %}
+{% block title %}Bet{% endblock %}
 {% block body %}
-<h3>Manual bet (account: manual)</h3>
+<main class="page">
+<h1>Place a paper bet</h1>
+<p class="muted">Bets go to the manual account (paper). Preview checks the live order book; nothing here places a real order.</p>
 <form id="f" onsubmit="return false">
-  <label>Market <select name="ticker">
-    {% for m in markets %}<option value="{{ m.ticker }}">{{ m.ticker }} ({{ m.label }})</option>{% endfor %}
-  </select></label>
-  <label>Side <select name="side"><option>yes</option><option>no</option></select></label>
-  <label>Contracts <input name="contracts" type="number" min="1" max="100" value="1"></label>
-  <label>Max price <input name="price_cap" type="number" step="0.01" min="0.01" max="0.99" value="0.50"></label>
-  <button id="preview">Preview fill</button>
-  <button id="confirm" disabled>Confirm paper bet</button>
+  <label for="ticker">Market</label>
+  <select id="ticker" name="ticker">
+    {% for m, t in markets %}<option value="{{ m.ticker }}"{% if m.ticker == selected %} selected{% endif %}>{{ t }}</option>{% endfor %}
+  </select>
+  <label for="side">Side</label><select id="side" name="side"><option>yes</option><option>no</option></select>
+  <label for="contracts">Contracts</label><input id="contracts" name="contracts" type="number" min="1" max="100" value="1">
+  <label for="price_cap">Max price</label><input id="price_cap" name="price_cap" type="number" step="0.01" min="0.01" max="0.99" value="0.50">
+  <div><button class="btn" id="preview">Preview fill</button><button class="btn primary" id="confirm" disabled>Confirm paper bet</button></div>
 </form>
-<pre id="out" class="muted"></pre>
+<pre id="out" class="muted" aria-live="polite"></pre>
 <script>
 const f = document.getElementById('f'), out = document.getElementById('out'), confirmBtn = document.getElementById('confirm');
 const body = () => ({ticker: f.ticker.value, side: f.side.value,
@@ -39,4 +42,5 @@ confirmBtn.onclick = async () => {
   out.textContent = JSON.stringify(await r.json(), null, 2);
 };
 </script>
+</main>
 {% endblock %}

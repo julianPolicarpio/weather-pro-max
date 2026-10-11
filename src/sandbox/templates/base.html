@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{% block title %}Markets{% endblock %} · Weather Pro Max (paper)</title>
+<title>{% block title %}Weather Pro Max{% endblock %} · Weather Pro Max (paper)</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <style>{% include "wpm.css" %}</style>
@@ -26,13 +26,35 @@
     {% endif %}
     {% if fresh %}
       {% if fresh.state == "none" %}<span class="stale">No snapshots yet. Run <code>sandbox cycle</code>.</span>
-      {% elif fresh.state == "stale" %}<span class="stale" role="status">Prices are {{ fresh.minutes }} min old: the sandbox cycle may have stopped</span>
-      {% else %}<div><small>updated</small><b>{{ fresh.minutes }} min ago</b></div>{% endif %}
+      {% else %}<div id="fresh" data-taken="{{ snap.taken_at }}">
+        {% if fresh.state == "stale" %}<span class="stale" role="status">Prices are {{ fresh.minutes }} min old: the sandbox cycle may have stopped</span>
+        {% else %}<small>updated</small><b>{{ fresh.minutes }} min ago</b>{% endif %}
+      </div>{% endif %}
     {% endif %}
   </div>
 </header>
 {% block body %}{% endblock %}
 <script>
+(() => {   // keep the freshness figure honest between page loads; swap in the stale warning past 30 min
+  const el = document.getElementById('fresh');
+  if (!el) return;
+  const tick = () => {
+    const mins = Math.max(0, Math.floor((Date.now() - Date.parse(el.dataset.taken)) / 60000));
+    if (Number.isNaN(mins)) return;
+    el.replaceChildren();
+    if (mins > 30) {
+      const s = document.createElement('span');
+      s.className = 'stale'; s.setAttribute('role', 'status');
+      s.textContent = 'Prices are ' + mins + ' min old: the sandbox cycle may have stopped';
+      el.append(s);
+    } else {
+      const sm = document.createElement('small'), bb = document.createElement('b');
+      sm.textContent = 'updated'; bb.textContent = mins + ' min ago';
+      el.append(sm, bb);
+    }
+  };
+  setInterval(tick, 60000);
+})();
 (() => {   // reload when a new snapshot lands (spec §5); a failed poll is retried on the next tick
   const start = {{ (snap_id if snap_id is defined else none) | tojson }};
   if (start === null) return;

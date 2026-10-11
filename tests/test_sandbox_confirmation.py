@@ -293,7 +293,7 @@ def test_verdict_text_wording():
     assert sb.verdict_text({**base, 'state': 'UNLOCKED'}) == 'UNLOCKED'
     assert sb.verdict_text({**base, 'resolved_at': '2026-10-04T10:00:00+00:00',
                             'failed_attempts': 3}) == (
-        'LOCKED — confirmation failed 2026-10-04 18:00 Manila (3 failed attempts)')
+        'LOCKED: confirmation failed 2026-10-04 18:00 Manila (3 failed attempts)')
     assert sb.verdict_text({**base, 'state': 'PROVISIONAL', 'fresh_settled_bets': 7,
                             'fresh_n_events': 5, 'fresh_brier_n': 4,
                             'fresh_brier_events': 3}) == (
@@ -314,7 +314,7 @@ def test_cli_provisional_counts_and_failure_timestamp(tmp_path, capsys):
         sb.advance_confirmation(c, 'mos', T)
     before = p.read_bytes()
     main(['--db', str(p), 'report'])
-    assert ('LOCKED — confirmation failed 2026-10-04 18:00 Manila (1 failed attempt)'
+    assert ('LOCKED: confirmation failed 2026-10-04 18:00 Manila (1 failed attempt)'
             in capsys.readouterr().out)
     assert p.read_bytes() == before
 

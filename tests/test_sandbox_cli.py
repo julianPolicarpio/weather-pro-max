@@ -148,7 +148,7 @@ def test_serve_binds_loopback_only_on_8713(tmp_path, monkeypatch):
 
 # ---- M5: an uninitialised database is explained, not a traceback ---------------------
 
-NOT_INITIALISED = "sandbox DB not initialised — run `sandbox init` first"
+NOT_INITIALISED = "sandbox DB not initialised: run `sandbox init` first"
 
 
 def test_report_on_a_missing_database_explains_and_creates_nothing(tmp_path, capsys):

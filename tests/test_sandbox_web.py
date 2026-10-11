@@ -155,7 +155,7 @@ def test_scoreboard_persisted_state_overrides_sample(tmp_path):
     _confirmation(db, 'LOCKED', resolved='2026-10-04T10:00:00+00:00', failed=2)
     html = c.get('/scoreboard').text
     assert 'UNLOCKED' not in html
-    assert 'LOCKED — confirmation failed 2026-10-04 18:00 Manila (2 failed attempts)' in html
+    assert 'LOCKED: confirmation failed 2026-10-04 18:00 Manila (2 failed attempts)' in html
     assert 'Oct 04 18:00 MNL' not in html
     assert 'profit test ✓' in html
 
@@ -229,7 +229,7 @@ def test_empty_scoreboard_explains_missing_accounts(tmp_path):
 
 # ---- M5: an uninitialised database is a 503 that says what to do ----------------------
 
-NOT_INITIALISED = "sandbox DB not initialised — run `sandbox init` first"
+NOT_INITIALISED = "sandbox DB not initialised: run `sandbox init` first"
 
 
 def _assert_503_explains(c):
@@ -340,3 +340,50 @@ def test_unlock_checklist_lists_every_floor(tmp_path):
     for row in ("Settled bets", "Distinct events", "Bets scored against the market", "Scored events",
                 "Profit 95% CI above zero", "More accurate than market", "fresh window"):
         assert row in html, row
+
+
+def test_bet_page_preselects_ticker_and_names_the_account(tmp_path):
+    c, _ = client(tmp_path)
+    html = c.get("/bet", params={"ticker": T69}).text
+    assert f'<option value="{T69}" selected>' in html
+    assert "Bets go to the manual account (paper)" in html
+    assert "f.addEventListener('input', invalidate)" in html      # guards unchanged
+
+
+def test_no_em_dash_on_any_page(tmp_path):
+    c, _ = client(tmp_path)
+    c.post("/api/bet", json={"ticker": T69, "side": "yes", "contracts": 1, "price_cap": 0.25})
+    for page in ("/", "/portfolio", "/bet", "/scoreboard", "/log"):
+        assert "—" not in c.get(page).text, page
+
+
+def test_scoreboard_cards_include_the_unlock_checklist(tmp_path):
+    c, _ = client(tmp_path)
+    html = c.get("/scoreboard").text
+    assert html.count("Real-money unlock") >= 4 and "uncalibrated" in html
+
+
+def test_city_filter_keeps_show_all(tmp_path):
+    c, _ = client(tmp_path)
+    assert 'name="all" value="1"' in c.get("/?all=1").text
+    assert 'name="all" value="1"' not in c.get("/").text
+
+
+def test_page_titles(tmp_path):
+    c, _ = client(tmp_path)
+    assert "<title>Scoreboard" in c.get("/scoreboard").text
+    assert "<title>Bet" in c.get("/bet").text
+    assert "<title>Order log" in c.get("/log").text
+    assert "<title>Markets" in c.get("/").text
+
+
+def test_freshness_is_recomputed_in_the_browser(tmp_path):
+    c, _ = client(tmp_path)
+    html = c.get("/").text
+    assert 'data-taken="' in html and "> 30" in html
+
+
+def test_hostile_query_values_stay_escaped(tmp_path):
+    c, _ = client(tmp_path)
+    r = c.get("/", params={"city": '"><script>alert(1)</script>', "account": "citycast"})
+    assert r.status_code == 200 and "<script>alert(1)" not in r.text

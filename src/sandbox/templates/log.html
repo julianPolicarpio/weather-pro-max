@@ -1,9 +1,13 @@
 {% extends "base.html" %}
+{% block title %}Order log{% endblock %}
 {% block body %}
+<main class="page">
+<h1>Order log</h1>
 <div class="table-scroll" tabindex="0" role="region" aria-label="Order log">
 <table>
-  <tr><th>#</th><th>When</th><th>Account</th><th>Ticker</th><th>Side</th><th>Status</th>
-      <th>Filled</th><th>Cost</th><th>Fee</th><th>Levels</th><th>Payout</th></tr>
+  <thead><tr><th>#</th><th>When</th><th>Account</th><th>Market</th><th>Side</th><th>Status</th>
+      <th>Filled</th><th>Cost</th><th>Fee</th><th>Levels</th><th>Payout</th></tr></thead>
+  <tbody>
   {% for o in orders %}
   <tr><td>{{ o.id }}</td><td>{{ o.decided_at | manila }}</td><td>{{ o.account }}</td>
       <td>{{ o.ticker }}</td><td>{{ o.side }}</td><td>{{ o.status }}</td>
@@ -12,6 +16,8 @@
       <td class="muted">{{ o.levels_json }}</td>
       <td>{{ "%.2f"|format(o.payout) if o.payout is not none else "open" }}</td></tr>
   {% endfor %}
+  </tbody>
 </table>
 </div>
+</main>
 {% endblock %}

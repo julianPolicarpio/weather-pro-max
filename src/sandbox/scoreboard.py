@@ -214,7 +214,7 @@ def verdict_text(status: dict) -> str:
                 f"{status['fresh_brier_events']}/{N_EVENTS_REQUIRED} scored events{after})")
     if state == "LOCKED" and status.get("resolved_at"):
         # a stored failure always counts at least one attempt, even if the counter is absent
-        return (f"LOCKED — confirmation failed {manila_stamp(status['resolved_at'])} "
+        return (f"LOCKED: confirmation failed {manila_stamp(status['resolved_at'])} "
                 f"({_attempts(max(failed, 1))})")
     if state == "UNLOCKED" and failed > 0:
         return f"UNLOCKED (after {_attempts(failed)})"

@@ -79,7 +79,7 @@ def connect_readonly(path: str | Path) -> sqlite3.Connection:
     return conn
 
 
-NOT_INITIALISED = "sandbox DB not initialised — run `sandbox init` first"
+NOT_INITIALISED = "sandbox DB not initialised: run `sandbox init` first"
 
 
 class NotInitialised(Exception):

@@ -13,6 +13,7 @@
       <a class="chip" href="{{ query(request, metric=key) }}" {% if f.metric == key %}aria-current="true"{% endif %}>{{ label }}</a>
       {% endfor %}
       <form method="get">
+        {% if show_all %}<input type="hidden" name="all" value="1">{% endif %}
         {% if account %}<input type="hidden" name="account" value="{{ account }}">{% endif %}
         <input type="hidden" name="day" value="{{ f.day }}"><input type="hidden" name="metric" value="{{ f.metric }}">
         <label class="sr" for="city">City</label>

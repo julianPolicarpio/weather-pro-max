@@ -107,7 +107,7 @@ def create_app(db_path: str, get=None) -> FastAPI:
     def not_initialised(request: Request, exc: NotInitialised):
         if request.url.path.startswith("/api/"):
             return JSONResponse({"error": str(exc)}, status_code=503)
-        return templates.TemplateResponse(request, "notice.html", {"message": str(exc)},
+        return templates.TemplateResponse(request, "notice.html", {"message": str(exc), "nav": ""},
                                           status_code=503)
 
     def _snapshot(conn):
@@ -174,11 +174,15 @@ def create_app(db_path: str, get=None) -> FastAPI:
             return {"id": latest_snapshot_id(conn, utc_now_iso())}
 
     @app.get("/bet", response_class=HTMLResponse)
-    def bet_page(request: Request):
+    def bet_page(request: Request, ticker: str = ""):
         with closing(_read_conn()) as conn:
-            snap = _snapshot(conn)
-        return templates.TemplateResponse(request, "bet.html",
-                                          {"markets": snap.markets if snap else ()})
+            ctx = _frame(conn, request, "bet")
+        ctx["snap_id"] = None   # no auto-reload while the form is being filled
+        snap = ctx["snap"]
+        ctx.update(markets=[(m, views.title(m.station, m.metric, m.lo, m.hi, m.event_date))
+                            for m in (snap.markets if snap else ())],
+                   selected=ticker)
+        return templates.TemplateResponse(request, "bet.html", ctx)
 
     @app.get("/api/preview")
     def preview(ticker: str, side: str, contracts: int, price_cap: float):
@@ -213,6 +217,7 @@ def create_app(db_path: str, get=None) -> FastAPI:
     @app.get("/scoreboard", response_class=HTMLResponse)
     def scoreboard(request: Request):
         with closing(_read_conn()) as conn:
+            ctx = _frame(conn, request, "scoreboard")
             have = {r["name"] for r in conn.execute("SELECT name FROM accounts")}
             cards = []
             for name, _, _ in ACCOUNTS:
@@ -224,14 +229,14 @@ def create_app(db_path: str, get=None) -> FastAPI:
                               "segments": [(title, report(conn, name, segment=segment))
                                            for title, segment in (("Pre-day", "pre_day"),
                                                                   ("Same-day", "same_day"))]})
-        return templates.TemplateResponse(request, "scoreboard.html",
-                                          {"cards": cards, "n_required": N_REQUIRED,
-                                           "n_events_required": N_EVENTS_REQUIRED})
+        ctx.update(cards=cards, n_events_required=N_EVENTS_REQUIRED)
+        return templates.TemplateResponse(request, "scoreboard.html", ctx)
 
     @app.get("/log", response_class=HTMLResponse)
     def order_log(request: Request):
         with closing(_read_conn()) as conn:
-            orders = conn.execute("SELECT * FROM orders ORDER BY id DESC LIMIT 500").fetchall()
-        return templates.TemplateResponse(request, "log.html", {"orders": orders})
+            ctx = _frame(conn, request, "log")
+            ctx["orders"] = conn.execute("SELECT * FROM orders ORDER BY id DESC LIMIT 500").fetchall()
+        return templates.TemplateResponse(request, "log.html", ctx)
 
     return app
