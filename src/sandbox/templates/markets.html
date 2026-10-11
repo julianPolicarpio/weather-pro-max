@@ -36,7 +36,7 @@
       <div class="t"><span>{{ c.city }} · {{ c.metric }}</span><span>{{ c.closes }}</span></div>
       <h3>{{ c.question }}</h3>
       {% for r in c.rungs %}
-      <a class="rung {{ 'mine' if r.held else '' }}" href="/bet?ticker={{ r.ticker }}">
+      <a class="rung {{ 'mine' if r.held else '' }}" href="/bet?ticker={{ r.ticker }}" aria-label="Bet on {{ c.city }} {{ c.metric }} {{ r.label }}{% if r.p is not none %}, market {{ '%.0f'|format(r.p * 100) }}%{% endif %}{% if r.held %}, held{% endif %}">
         <span class="b">{{ r.label }}{% if r.held %}<span class="held-tag">held</span>{% endif %}</span>
         <span class="pb" aria-hidden="true"><i style="width:{{ ((r.p or 0) * 100) | round | int }}%"></i></span>
         <span class="pct">{{ "%.0f%%"|format(r.p * 100) if r.p is not none else "–" }}</span>
@@ -44,7 +44,7 @@
       </a>
       {% endfor %}
       <div class="foot"><span>{{ c.rungs | length }} buckets</span>
-        <span>{% if c.max_move is not none %}{{ c.max_move | points }} pts since last snapshot{% else %}no earlier snapshot{% endif %}</span></div>
+        <span>{% if c.max_move is not none %}{{ c.max_move | points }} pts since last snapshot{% elif not prev %}no earlier snapshot{% endif %}</span></div>
     </article>
     {% endfor %}
   </div>

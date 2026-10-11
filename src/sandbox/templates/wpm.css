@@ -80,6 +80,7 @@ table { width: 100%; border-collapse: collapse; background: var(--panel); border
 th { text-align: left; font-weight: 600; font-size: 11.5px; color: var(--ink2); padding: 8px 12px;
      border-bottom: 1px solid var(--line); }
 td { padding: 8px 12px; border-bottom: 1px solid #f1efe9; }
+td, th { white-space: nowrap; }
 td.n, th.n { text-align: right; }
 tr.grp td { background: var(--paper); font-weight: 600; font-size: 11.5px; color: var(--ink2); }
 .page { padding: 22px 28px; max-width: 1200px; }
