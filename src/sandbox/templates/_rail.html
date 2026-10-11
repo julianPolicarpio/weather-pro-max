@@ -1,0 +1,45 @@
+<aside class="rail" aria-label="Bots and positions">
+  <section aria-labelledby="rail-bots">
+    <h2 id="rail-bots">Bots</h2>
+    {% for b in bots %}
+    <a class="bot" href="{{ query(request, account=b.name) }}" {% if b.name == account %}aria-current="true"{% endif %}>
+      <span class="n">{{ b.name }}</span>
+      <span class="p {{ 'up' if b.profit > 0 else 'down' if b.profit < 0 else '' }}">{{ b.profit | money }}</span>
+      <span class="meta">{{ b.settled }} / {{ n_required }} settled
+        <span class="track" aria-hidden="true"><i style="width:{{ [100, (b.settled * 100) // n_required] | min }}%"></i></span></span>
+    </a>
+    {% else %}
+    <p class="empty">No accounts yet. Run <code>sandbox init</code>.</p>
+    {% endfor %}
+    {% if show_all %}<a class="more" href="{{ query(request, all=none) }}">Active bots only</a>
+    {% else %}<a class="more" href="{{ query(request, all=1) }}">Show all accounts</a>{% endif %}
+  </section>
+  {% if account %}
+  <section aria-labelledby="rail-pos">
+    <h2 id="rail-pos">Open positions · {{ account }}</h2>
+    {% if pos.count == 0 %}
+    <p class="empty">No open positions. {{ account }} bets at its next decision hour.</p>
+    {% else %}
+    <p class="sum"><b>{{ pos.count }} open</b> · ${{ "%.2f"|format(pos.at_risk) }} at risk</p>
+    {% if pos.live %}<div class="grp">Live · {{ pos.live | length }}</div>
+    {% for r in pos.live[:live_n] %}
+    <div class="li"><span>{{ r.title }}<span class="sub">{{ r.side | upper }} ×{{ r.n }} at {{ r.paid_c }}¢ · {{ r.status }}</span></span>
+      <span class="{{ 'up' if (r.unrealized_c or 0) > 0 else 'down' if (r.unrealized_c or 0) < 0 else 'muted' }}">{{ r.unrealized_c | cents if r.unrealized_c is not none else "–" }}</span></div>
+    {% endfor %}{% endif %}
+    {% if pos.awaiting %}<div class="grp">Awaiting settlement · {{ pos.awaiting | length }}</div>
+    {% for r in pos.awaiting[:await_n] %}
+    <div class="li"><span>{{ r.title }}<span class="sub">{{ r.side | upper }} ×{{ r.n }} at {{ r.paid_c }}¢</span></span><span class="muted">NWS report pending</span></div>
+    {% endfor %}{% endif %}
+    <a class="more" href="/portfolio?account={{ account }}">All {{ pos.count }} in Portfolio</a>
+    {% endif %}
+  </section>
+  {% endif %}
+  <section aria-labelledby="rail-moves">
+    <h2 id="rail-moves">Biggest moves · today</h2>
+    {% for mv in moves %}
+    <div class="li"><span>{{ mv.title }}</span><span>{{ "%.0f"|format(mv.p * 100) }}% <span class="{{ 'up' if mv.change > 0 else 'down' }}">{{ mv.change | points }}</span></span></div>
+    {% else %}
+    <p class="empty">No price changes since the previous snapshot.</p>
+    {% endfor %}
+  </section>
+</aside>

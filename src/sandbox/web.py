@@ -3,14 +3,16 @@ import logging
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
+from sandbox import views
 from sandbox.book import parse_book, walk
 from sandbox.cycle import ACCOUNTS, ensure_accounts, execute_intent, utc_now_iso
 from sandbox.db import NOT_INITIALISED, NotInitialised, connect, connect_readonly, require_initialised
@@ -39,6 +41,31 @@ def _manila(ts: str | None) -> str:
     return datetime.fromisoformat(ts).astimezone(MANILA).strftime("%b %d %H:%M MNL")
 
 
+def _money(x: float) -> str:
+    return ("+" if x > 0 else "−" if x < 0 else "") + f"${abs(x):.2f}"
+
+
+def _cents(x: int) -> str:
+    return ("+" if x > 0 else "−" if x < 0 else "") + f"{abs(x)}¢"
+
+
+def _points(x: float) -> str:
+    v = round(x)
+    return ("+" if v > 0 else "−" if v < 0 else "") + f"{abs(v)}"
+
+
+def _query(request: Request, **changes) -> str:
+    """Relative query string with `changes` applied in place (None drops a key), so links keep
+    the other params and their order; Starlette's include_query_params would move a changed key last."""
+    params = dict(request.query_params)
+    for k, v in changes.items():
+        if v is None:
+            params.pop(k, None)
+        else:
+            params[k] = str(v)
+    return "?" + urlencode(params)
+
+
 def _validate(bet: BetIn) -> None:
     if bet.side not in ("yes", "no"):
         raise HTTPException(400, "side must be yes or no")
@@ -56,9 +83,11 @@ def _require_known(snap, ticker: str) -> None:
 
 def create_app(db_path: str, get=None) -> FastAPI:
     get = get or PacedGet()
-    app = FastAPI(title="Weather Desk Sandbox")
+    app = FastAPI(title="Weather Pro Max")
     templates = Jinja2Templates(directory=str(TEMPLATES))
     templates.env.filters["manila"] = _manila
+    templates.env.filters.update(money=_money, cents=_cents, points=_points)
+    templates.env.globals["query"] = _query
     labels = {name: label for name, _, label in ACCOUNTS}
 
     def _read_conn():
@@ -85,19 +114,51 @@ def create_app(db_path: str, get=None) -> FastAPI:
         sid = latest_snapshot_id(conn, utc_now_iso())
         return load_snapshot(conn, sid) if sid is not None else None
 
+    def _frame(conn, request: Request, nav: str) -> dict:
+        """Context every Weather Pro Max page shares: top bar, rail and freshness (spec §3, §6)."""
+        now = utc_now_iso()
+        snap = _snapshot(conn)
+        prev = views.previous_snapshot(conn, snap)
+        show_all = request.query_params.get("all") == "1"
+        everyone = views.bot_summaries(conn, show_all=True)
+        names = [b["name"] for b in everyone]
+        wanted = request.query_params.get("account") or views.DEFAULT_BOT
+        account = wanted if wanted in names else (views.DEFAULT_BOT if views.DEFAULT_BOT in names
+                                                  else (names[0] if names else None))
+        today = views.current_day(snap, now)
+        empty = {"live": [], "awaiting": [], "count": 0, "at_risk": 0.0}
+        return {"nav": nav, "now": now, "snap": snap, "snap_id": snap.id if snap else None, "prev": prev,
+                "account": account, "show_all": show_all,
+                "bots": [b for b in everyone if show_all or b["name"] in views.ACTIVE_BOTS],
+                "bot": next((b for b in everyone if b["name"] == account), None),
+                "pos": views.open_positions(conn, account, snap, now) if account else empty,
+                "moves": views.biggest_moves(snap, prev, today) if today else [],
+                "today": today, "fresh": views.freshness(snap, now), "n_required": N_REQUIRED,
+                "live_n": views.LIVE_RAIL_N, "await_n": views.AWAIT_RAIL_N}
+
     @app.get("/", response_class=HTMLResponse)
-    def markets(request: Request):
+    def markets(request: Request, day: str = "today", metric: str = "both", city: str = ""):
+        day = day if day in ("today", "tomorrow") else "today"
+        metric = metric if metric in ("both", "high", "low") else "both"
+        city = city if city in views.CITY else ""
         with closing(_read_conn()) as conn:
-            snap = _snapshot(conn)
-            events = []
-            if snap:
-                for ev, ms in snap.events().items():
-                    probs = devig(ms)
-                    events.append({"event": ev, "series": ms[0].series, "station": ms[0].station,
-                                   "date": ms[0].event_date,
-                                   "rows": [(m, probs.get(m.ticker)) for m in ms]})
-        return templates.TemplateResponse(request, "markets.html",
-                                          {"snap": snap, "events": events})
+            ctx = _frame(conn, request, "markets")
+            held = views.held_tickers(conn, ctx["account"]) if ctx["account"] else set()
+        d = ctx["today"]
+        if d and day == "tomorrow":
+            d = (date.fromisoformat(d) + timedelta(days=1)).isoformat()
+        ctx.update(cards=views.market_cards(ctx["snap"], ctx["prev"], held, d,
+                                            None if metric == "both" else metric, city or None, ctx["now"])
+                   if d else [],
+                   f={"day": day, "metric": metric, "city": city},
+                   cities=sorted(views.CITY.items(), key=lambda kv: kv[1]),
+                   day_text=views.day_text(d) if d else "")
+        return templates.TemplateResponse(request, "markets.html", ctx)
+
+    @app.get("/api/latest-snapshot")
+    def latest_snapshot():
+        with closing(_read_conn()) as conn:
+            return {"id": latest_snapshot_id(conn, utc_now_iso())}
 
     @app.get("/bet", response_class=HTMLResponse)
     def bet_page(request: Request):

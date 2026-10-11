@@ -3,30 +3,48 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Weather Desk Sandbox</title>
-<style>
-  :root { --bg: #f6f5f1; --fg: #1d1d1b; --muted: #6b6a65; --line: #d9d7cf; --good: #1f7a4d; --bad: #a3361f; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #161615; --fg: #ecebe6; --muted: #9a998f; --line: #34332f; --good: #70c49b; --bad: #f0927d; } }
-  body { background: var(--bg); color: var(--fg); font: 14px/1.45 ui-sans-serif, system-ui, sans-serif; margin: 0 16px 48px; }
-  nav { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
-  nav strong { margin-right: auto; }
-  nav a { display: inline-flex; align-items: center; min-height: 44px; }
-  a:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
-  a { color: inherit; }
-  table { border-collapse: collapse; width: 100%; margin: 8px 0 20px; font-variant-numeric: tabular-nums; }
-  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); }
-  th { color: var(--muted); font-weight: 500; }
-  .table-scroll { overflow-x: auto; max-width: 100%; margin: 8px 0 20px; }   /* wide tables scroll in place on a phone */
-  .table-scroll table { margin: 0; }
-  .muted { color: var(--muted); }
-  .good { color: var(--good); } .bad { color: var(--bad); }
-  .banner { padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; display: inline-block; }
-</style>
+<title>{% block title %}Markets{% endblock %} · Weather Pro Max (paper)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>{% include "wpm.css" %}</style>
 </head>
 <body>
-<nav><strong>Weather Desk Sandbox</strong>
-  <a href="/">Markets</a><a href="/bet">Bet</a><a href="/scoreboard">Scoreboard</a><a href="/log">Log</a></nav>
-<p class="muted">Paper trading only. Nothing here places a real order.</p>
+<header class="bar">
+  <span><span class="word">Weather Pro Max</span><span class="paper" title="Paper trading only. Nothing here places a real order.">PAPER</span></span>
+  {% set q = ("?account=" ~ account) if account else "" %}
+  <nav aria-label="Main">
+    <a href="/{{ q }}" {% if nav == "markets" %}aria-current="page"{% endif %}>Markets</a>
+    <a href="/portfolio{{ q }}" {% if nav == "portfolio" %}aria-current="page"{% endif %}>Portfolio</a>
+    <a href="/scoreboard" {% if nav == "scoreboard" %}aria-current="page"{% endif %}>Scoreboard</a>
+    <a href="/log" {% if nav == "log" %}aria-current="page"{% endif %}>Log</a>
+  </nav>
+  <div class="figs">
+    {% if bot %}
+    <div><small>{{ bot.name }} · at risk</small><b>${{ "%.2f"|format(bot.at_risk) }}</b></div>
+    <div><small>open</small><b>{{ bot.open }}</b></div>
+    <div><small>settled P&amp;L</small><b class="{{ 'up' if bot.profit > 0 else 'down' if bot.profit < 0 else '' }}">{{ bot.profit | money }}</b></div>
+    {% endif %}
+    {% if fresh %}
+      {% if fresh.state == "none" %}<span class="stale">No snapshots yet. Run <code>sandbox cycle</code>.</span>
+      {% elif fresh.state == "stale" %}<span class="stale" role="status">Prices are {{ fresh.minutes }} min old: the sandbox cycle may have stopped</span>
+      {% else %}<div><small>updated</small><b>{{ fresh.minutes }} min ago</b></div>{% endif %}
+    {% endif %}
+  </div>
+</header>
 {% block body %}{% endblock %}
+<script>
+(() => {   // reload when a new snapshot lands (spec §5); a failed poll is retried on the next tick
+  const start = {{ (snap_id if snap_id is defined else none) | tojson }};
+  if (start === null) return;
+  setInterval(async () => {
+    try {
+      const r = await fetch('/api/latest-snapshot');
+      if (!r.ok) return;
+      const j = await r.json();
+      if (j.id !== null && j.id !== start) location.reload();
+    } catch (e) { /* offline or server restarting: try again next minute */ }
+  }, 60000);
+})();
+</script>
 </body>
 </html>

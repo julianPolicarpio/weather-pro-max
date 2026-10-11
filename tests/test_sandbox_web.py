@@ -30,7 +30,7 @@ def test_markets_page_is_unbranded_and_lists_buckets(tmp_path):
     c, _ = client(tmp_path)
     r = c.get("/")
     assert r.status_code == 200
-    assert "Weather Desk Sandbox" in r.text and T69 in r.text
+    assert "Weather Pro Max" in r.text and "PAPER" in r.text and T69 in r.text
     assert "Kalshi" not in r.text
 
 
@@ -236,7 +236,7 @@ def _assert_503_explains(c):
     for page in ('/', '/bet', '/scoreboard', '/log'):
         r = c.get(page)
         assert r.status_code == 503, page
-        assert NOT_INITIALISED in r.text and 'Weather Desk Sandbox' in r.text, page
+        assert NOT_INITIALISED in r.text and 'Weather Pro Max' in r.text, page
         assert 'Traceback' not in r.text
     r = c.get('/api/preview', params={**BET, 'ticker': T69})
     assert r.status_code == 503 and r.json()['error'] == NOT_INITIALISED
@@ -261,7 +261,44 @@ def test_wide_tables_scroll_inside_their_own_box(tmp_path):
     (browser check 2026-10-04: log 663px, markets 413px on a 375px screen)."""
     c, _ = client(tmp_path)
     c.post("/api/bet", json={"ticker": T69, "side": "yes", "contracts": 1, "price_cap": 0.25})
-    for path in ("/", "/log"):
+    for path in ("/log",):
         html = c.get(path).text
         assert html.count("<table") >= 1
         assert html.count('class="table-scroll"') == html.count("<table"), path
+
+
+def test_markets_filters_and_account_switch(tmp_path):
+    c, _ = client(tmp_path)
+    html = c.get("/", params={"account": "mos", "metric": "low"}).text
+    assert "No low markets" in html
+    assert '<a class="bot" href="?account=mos&amp;metric=low" aria-current="true">' in html
+    assert 'href="?account=mos&amp;metric=low&amp;all=1">Show all accounts' in html
+    page = c.get("/", params={"account": "not-a-bot"}).text            # unknown: falls back to citycast
+    assert 'aria-current="true"' in page and "Open positions · citycast" in page
+
+
+def test_markets_cards_link_to_a_prefilled_bet(tmp_path):
+    c, _ = client(tmp_path)
+    html = c.get("/").text
+    assert f'href="/bet?ticker={T69}"' in html and "Highest temperature in New York" in html
+
+
+def test_rail_shows_open_positions_for_the_selected_account(tmp_path):
+    c, _ = client(tmp_path)
+    c.post("/api/bet", json={"ticker": T69, "side": "yes", "contracts": 1, "price_cap": 0.25})
+    html = c.get("/", params={"account": "manual", "all": "1"}).text
+    assert "1 open" in html and '<span class="held-tag">held</span>' in html
+
+
+def test_latest_snapshot_api(tmp_path):
+    c, _ = client(tmp_path)
+    assert isinstance(c.get("/api/latest-snapshot").json()["id"], int)
+    (tmp_path / "x").mkdir()
+    c2, _ = client(tmp_path / "x", snapshot=False)
+    assert c2.get("/api/latest-snapshot").json() == {"id": None}
+
+
+def test_freshness_shows_no_snapshot_hint(tmp_path):
+    (tmp_path / "y").mkdir()
+    c, _ = client(tmp_path / "y", snapshot=False)
+    assert "No snapshots yet" in c.get("/").text

@@ -1,21 +1,53 @@
 {% extends "base.html" %}
+{% block title %}Markets{% endblock %}
 {% block body %}
-{% if not snap %}<p>No snapshot yet. Run <code>sandbox cycle</code>.</p>{% else %}
-<p class="muted">Snapshot {{ snap.taken_at | manila }} · {{ events | length }} events</p>
-{% for e in events %}
-<h3>{{ e.series }} · {{ e.station }} · {{ e.date }}</h3>
-<div class="table-scroll" tabindex="0" role="region" aria-label="{{ e.series }} {{ e.date }} buckets">
-<table>
-  <tr><th>Bucket</th><th>Ticker</th><th>Bid</th><th>Ask</th><th>Size at ask</th><th>Market p</th></tr>
-  {% for m, p in e.rows %}
-  <tr><td>{{ m.label }}</td><td class="muted">{{ m.ticker }}</td>
-      <td>{{ "%.2f"|format(m.yes_bid) if m.yes_bid is not none else "—" }}</td>
-      <td>{{ "%.2f"|format(m.yes_ask) if m.yes_ask is not none else "—" }}</td>
-      <td>{{ "%.0f"|format(m.yes_ask_size) if m.yes_ask_size is not none else "—" }}</td>
-      <td>{{ "%.1f%%"|format(p * 100) if p is not none else "—" }}</td></tr>
-  {% endfor %}
-</table>
+<div class="layout">
+{% include "_rail.html" %}
+<main class="content">
+  <div class="head"><h1>Markets</h1>
+    <div class="filters" role="group" aria-label="Filters">
+      {% for key, label in (("today", "Today"), ("tomorrow", "Tomorrow")) %}
+      <a class="chip" href="{{ query(request, day=key) }}" {% if f.day == key %}aria-current="true"{% endif %}>{{ label }}</a>
+      {% endfor %}
+      {% for key, label in (("both", "High + low"), ("high", "High"), ("low", "Low")) %}
+      <a class="chip" href="{{ query(request, metric=key) }}" {% if f.metric == key %}aria-current="true"{% endif %}>{{ label }}</a>
+      {% endfor %}
+      <form method="get">
+        {% if account %}<input type="hidden" name="account" value="{{ account }}">{% endif %}
+        <input type="hidden" name="day" value="{{ f.day }}"><input type="hidden" name="metric" value="{{ f.metric }}">
+        <label class="sr" for="city">City</label>
+        <select id="city" name="city"><option value="">All 24 cities</option>
+          {% for code, name in cities %}<option value="{{ code }}" {% if f.city == code %}selected{% endif %}>{{ name }}</option>{% endfor %}
+        </select>
+        <button class="btn" type="submit">Show</button>
+      </form>
+    </div>
+  </div>
+  {% if not snap %}
+  <p class="empty">No snapshots yet. Run <code>sandbox cycle</code>.</p>
+  {% elif not cards %}
+  <p class="empty">No {{ "" if f.metric == "both" else f.metric ~ " " }}markets for {{ day_text or "this day" }} in this snapshot.</p>
+  {% else %}
+  <p class="day">{{ day_text }} · {{ cards | length }} markets</p>
+  <div class="grid">
+    {% for c in cards %}
+    <article class="mk {{ 'held' if c.any_held else '' }}" aria-label="{{ c.city }} {{ c.metric }}">
+      <div class="t"><span>{{ c.city }} · {{ c.metric }}</span><span>{{ c.closes }}</span></div>
+      <h3>{{ c.question }}</h3>
+      {% for r in c.rungs %}
+      <a class="rung {{ 'mine' if r.held else '' }}" href="/bet?ticker={{ r.ticker }}">
+        <span class="b">{{ r.label }}{% if r.held %}<span class="held-tag">held</span>{% endif %}</span>
+        <span class="pb" aria-hidden="true"><i style="width:{{ ((r.p or 0) * 100) | round | int }}%"></i></span>
+        <span class="pct">{{ "%.0f%%"|format(r.p * 100) if r.p is not none else "–" }}</span>
+        <span class="ba">{{ r.bid_c if r.bid_c is not none else "–" }} / {{ r.ask_c if r.ask_c is not none else "–" }}¢</span>
+      </a>
+      {% endfor %}
+      <div class="foot"><span>{{ c.rungs | length }} buckets</span>
+        <span>{% if c.max_move is not none %}{{ c.max_move | points }} pts since last snapshot{% else %}no earlier snapshot{% endif %}</span></div>
+    </article>
+    {% endfor %}
+  </div>
+  {% endif %}
+</main>
 </div>
-{% endfor %}
-{% endif %}
 {% endblock %}
