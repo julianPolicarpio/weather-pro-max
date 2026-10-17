@@ -77,7 +77,7 @@ pip install -e '.[dev]'
 .venv/bin/python -m pytest -q
 ```
 
-Paper sandbox and the Weather Pro Max dashboard (http://127.0.0.1:8713):
+Paper sandbox and the Weather Pro Max dashboard:
 
 ```bash
 sandbox init
